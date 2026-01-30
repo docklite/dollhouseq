@@ -1,0 +1,29 @@
+[Unit]
+Description=Dollhouse q - qBittorrent monitoring dashboard
+After=network.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=nobody
+Group=nogroup
+ExecStart=/usr/local/bin/dollhouse-q /etc/dollhouse-q/config.json
+Restart=on-failure
+RestartSec=10s
+
+# Security hardening
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/etc/dollhouse-q
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+
+# Resource limits
+LimitNOFILE=1024
+MemoryLimit=128M
+
+[Install]
+WantedBy=multi-user.target

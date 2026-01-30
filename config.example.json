@@ -1,0 +1,11 @@
+{
+  "listen_addr": "127.0.0.1:17666",
+  "qb_url": "http://127.0.0.1:8080",
+  "qb_username": "admin",
+  "qb_password": "change-me",
+  "webui_url": "http://127.0.0.1:8080",
+  "disk_path": "/data",
+  "gluetun_health_url": "",
+  "poll_interval_s": 15,
+  "host_label": "my-server"
+}

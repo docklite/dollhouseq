@@ -1,0 +1,18 @@
+# Binaries
+dollhouse-q
+dollhouse-q-*
+
+# Config with secrets
+config.json
+
+# Go build artifacts
+*.exe
+*.test
+*.out
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~

@@ -1,0 +1,475 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Dollhouse q</title>
+  <style>
+    :root{
+      --bg0:#06060a;
+      --bg1:#0a0a10;
+      --card:#0c0c14;
+      --card2:#0b0b12;
+
+      --text: rgba(255,255,255,.90);
+      --muted: rgba(255,255,255,.58);
+      --faint: rgba(255,255,255,.10);
+
+      --pink:#ff4fd8;
+      --pink2:#ff8df0;
+      --pink3:rgba(255,79,216,.22);
+
+      --ok:#58ffcc;
+      --warn:#ffd36b;
+      --bad:#ff4f6d;
+
+      --mono: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+      --sans: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial;
+    }
+
+    *{box-sizing:border-box}
+    html,body{height:100%}
+    body{
+      margin:0;
+      color:var(--text);
+      font-family:var(--sans);
+      background:
+        radial-gradient(900px 500px at 15% -10%, rgba(255,79,216,.20), transparent 60%),
+        radial-gradient(700px 450px at 80% 5%, rgba(255,141,240,.10), transparent 55%),
+        linear-gradient(180deg, var(--bg0), var(--bg1));
+    }
+
+    .wrap{
+      max-width: 980px;
+      margin: 0 auto;
+      padding: 24px 18px 44px;
+    }
+
+    /* Top */
+    .top{
+      display:flex;
+      align-items:center;
+      justify-content:space-between;
+      gap:16px;
+      padding: 16px 18px;
+      border: 1px solid rgba(255,79,216,.22);
+      border-radius: 16px;
+      background: linear-gradient(180deg, rgba(255,79,216,.07), rgba(0,0,0,.08));
+      box-shadow:
+        0 0 0 1px rgba(255,255,255,.04) inset,
+        0 10px 40px rgba(0,0,0,.35),
+        0 0 30px rgba(255,79,216,.10);
+    }
+
+    .brand{
+      display:flex;
+      flex-direction:column;
+      gap:6px;
+      min-width: 220px;
+    }
+
+    .brandLine{
+      display:flex;
+      align-items:baseline;
+      gap:10px;
+    }
+
+    .title{
+      font-weight: 720;
+      letter-spacing:.2px;
+      font-size: 16px;
+    }
+
+    .qTag{
+      font-family: var(--mono);
+      font-size: 12px;
+      color: var(--pink2);
+      border: 1px solid rgba(255,79,216,.35);
+      background: rgba(255,79,216,.10);
+      padding: 3px 10px;
+      border-radius: 999px;
+      box-shadow: 0 0 22px rgba(255,79,216,.14);
+    }
+
+    .host{
+      font-family: var(--mono);
+      color: var(--muted);
+      font-size: 12px;
+    }
+
+    .statusRight{
+      display:flex;
+      align-items:center;
+      gap:12px;
+      font-family: var(--mono);
+      font-size: 12px;
+      color: var(--muted);
+      white-space:nowrap;
+    }
+
+    .dot{
+      width:10px;height:10px;border-radius:50%;
+      background: var(--ok);
+      box-shadow: 0 0 20px rgba(88,255,204,.25);
+    }
+    .statusWord{
+      color: var(--text);
+      font-weight: 700;
+      letter-spacing: .06em;
+      text-transform: uppercase;
+    }
+
+    /* Layout */
+    .grid{
+      margin-top: 18px;
+      display:grid;
+      grid-template-columns: 1fr;
+      gap: 18px;
+    }
+
+    .row2{
+      display:grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 18px;
+    }
+    @media (max-width: 760px){
+      .row2{grid-template-columns:1fr}
+      .statusRight{flex-wrap:wrap; justify-content:flex-end}
+      .brand{min-width:0}
+    }
+
+    /* Cards */
+    .card{
+      border-radius: 18px;
+      background: linear-gradient(180deg, rgba(255,255,255,.03), rgba(0,0,0,.12));
+      border: 1px solid rgba(255,79,216,.18);
+      box-shadow:
+        0 0 0 1px rgba(255,255,255,.03) inset,
+        0 16px 60px rgba(0,0,0,.40),
+        0 0 28px rgba(255,79,216,.06);
+      overflow:hidden;
+    }
+    .cardInner{
+      padding: 18px 18px 16px;
+    }
+    .cardTitle{
+      font-family: var(--mono);
+      letter-spacing:.12em;
+      text-transform: uppercase;
+      font-size: 12px;
+      color: rgba(255,141,240,.85);
+      margin-bottom: 14px;
+      display:flex;
+      align-items:center;
+      gap:10px;
+    }
+    .cardTitle::before{
+      content:"";
+      width:8px;height:8px;border-radius:50%;
+      background: var(--pink);
+      box-shadow: 0 0 18px rgba(255,79,216,.28);
+      display:inline-block;
+    }
+
+    .pill{
+      display:inline-flex;
+      align-items:center;
+      gap:10px;
+      padding: 10px 12px;
+      border-radius: 14px;
+      border: 1px solid rgba(255,255,255,.08);
+      background: rgba(0,0,0,.18);
+      font-family: var(--mono);
+      font-size: 13px;
+      color: var(--text);
+    }
+    .pill .label{color:var(--muted); font-size:12px}
+    .pill.ok{border-color: rgba(88,255,204,.30); box-shadow: 0 0 24px rgba(88,255,204,.08)}
+    .pill.warn{border-color: rgba(255,211,107,.35)}
+    .pill.bad{border-color: rgba(255,79,109,.40); box-shadow: 0 0 24px rgba(255,79,109,.08)}
+
+    .stack{display:flex; flex-direction:column; gap:12px}
+
+    /* Disk bar */
+    .barWrap{
+      border: 1px solid rgba(255,79,216,.20);
+      background: rgba(0,0,0,.20);
+      border-radius: 999px;
+      padding: 6px;
+      box-shadow: 0 0 24px rgba(255,79,216,.06);
+    }
+    .bar{
+      height: 10px;
+      border-radius: 999px;
+      background: linear-gradient(90deg, rgba(255,79,216,.85), rgba(255,141,240,.65));
+      width: 61%;
+      box-shadow: 0 0 18px rgba(255,79,216,.18);
+    }
+    .bigMetric{
+      margin-top: 14px;
+      display:flex;
+      align-items:baseline;
+      justify-content:space-between;
+      gap: 12px;
+      font-family: var(--mono);
+    }
+    .bigMetric .num{
+      font-size: 22px;
+      letter-spacing:.02em;
+    }
+    .bigMetric .sub{
+      color: var(--muted);
+      font-size: 12px;
+      white-space:nowrap;
+    }
+
+    /* Torrent list (simple, airy) */
+    .list{
+      display:flex;
+      flex-direction:column;
+      gap: 10px;
+      padding: 16px 18px 18px;
+      border-top: 1px solid rgba(255,255,255,.06);
+      background: rgba(0,0,0,.10);
+    }
+
+    .listHeader{
+      display:flex;
+      align-items:center;
+      justify-content:space-between;
+      gap:12px;
+      padding: 16px 18px 0;
+    }
+
+    .count{
+      font-family: var(--mono);
+      color: var(--muted);
+      font-size: 12px;
+    }
+
+    .item{
+      border: 1px solid rgba(255,255,255,.07);
+      background: rgba(0,0,0,.18);
+      border-radius: 14px;
+      padding: 14px 14px;
+      display:flex;
+      align-items:center;
+      justify-content:space-between;
+      gap: 14px;
+      transition: transform .08s ease, border-color .12s ease, background .12s ease;
+    }
+    .item:hover{
+      border-color: rgba(255,79,216,.28);
+      background: rgba(255,79,216,.06);
+      transform: translateY(-1px);
+    }
+
+    .left{
+      min-width:0;
+      display:flex;
+      align-items:center;
+      gap: 12px;
+    }
+
+    .tagDot{
+      width:10px;height:10px;border-radius:50%;
+      background: rgba(255,255,255,.22);
+      box-shadow: none;
+      flex: 0 0 auto;
+    }
+    .tagDot.dl{ background: var(--pink); box-shadow: 0 0 18px rgba(255,79,216,.24); }
+    .tagDot.seed{ background: var(--ok); box-shadow: 0 0 18px rgba(88,255,204,.18); }
+    .tagDot.pause{ background: rgba(255,255,255,.25); }
+    .tagDot.err{ background: var(--bad); box-shadow: 0 0 18px rgba(255,79,109,.20); }
+
+    .name{
+      font-family: var(--mono);
+      font-size: 13px;
+      overflow:hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+      max-width: 100%;
+    }
+    .right{
+      font-family: var(--mono);
+      color: var(--muted);
+      font-size: 12px;
+      white-space:nowrap;
+      display:flex;
+      align-items:center;
+      gap: 10px;
+      flex: 0 0 auto;
+    }
+    .miniPill{
+      padding: 6px 10px;
+      border-radius: 999px;
+      border: 1px solid rgba(255,79,216,.22);
+      background: rgba(255,79,216,.08);
+      color: rgba(255,255,255,.82);
+    }
+
+    /* Actions */
+    .actions{
+      display:flex;
+      gap: 12px;
+      justify-content:flex-end;
+      padding: 16px 18px 18px;
+      border-top: 1px solid rgba(255,255,255,.06);
+      background: rgba(0,0,0,.14);
+    }
+    .btn{
+      appearance:none;
+      border: 1px solid rgba(255,79,216,.28);
+      background: rgba(255,79,216,.10);
+      color: var(--text);
+      border-radius: 14px;
+      padding: 12px 14px;
+      font-family: var(--mono);
+      font-size: 12px;
+      cursor:pointer;
+      transition: transform .08s ease, background .12s ease, border-color .12s ease, box-shadow .12s ease;
+      box-shadow: 0 0 22px rgba(255,79,216,.10);
+      user-select:none;
+    }
+    .btn:hover{
+      transform: translateY(-1px);
+      border-color: rgba(255,79,216,.45);
+      background: rgba(255,79,216,.14);
+      box-shadow: 0 0 28px rgba(255,79,216,.14);
+    }
+    .btn.ghost{
+      background: rgba(255,255,255,.03);
+      border-color: rgba(255,255,255,.10);
+      box-shadow: none;
+    }
+    .btn.ghost:hover{
+      border-color: rgba(255,79,216,.35);
+      box-shadow: 0 0 26px rgba(255,79,216,.10);
+    }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+
+    <div class="top">
+      <div class="brand">
+        <div class="brandLine">
+          <div class="title">Dollhouse</div>
+          <div class="qTag">q</div>
+        </div>
+        <div class="host">tiny-vps • 10.77.0.2</div>
+      </div>
+
+      <div class="statusRight">
+        <span class="dot" aria-hidden="true"></span>
+        <span class="statusWord">OK</span>
+        <span>·</span>
+        <span>12s</span>
+      </div>
+    </div>
+
+    <div class="grid">
+
+      <div class="row2">
+        <div class="card">
+          <div class="cardInner">
+            <div class="cardTitle">Status</div>
+            <div class="stack">
+              <div class="pill ok"><span class="label">VPN</span> CONNECTED</div>
+              <div class="pill ok"><span class="label">qB</span> REACHABLE</div>
+            </div>
+          </div>
+        </div>
+
+        <div class="card">
+          <div class="cardInner">
+            <div class="cardTitle">Storage</div>
+            <div class="barWrap" aria-label="disk free bar">
+              <div class="bar" style="width:61%"></div>
+            </div>
+            <div class="bigMetric">
+              <div class="num">61% free</div>
+              <div class="sub">312GB / 510GB</div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="listHeader">
+          <div class="cardTitle" style="margin:0">Torrents</div>
+          <div class="count">Active 6 · Seed 14 · Err 0</div>
+        </div>
+
+        <div class="list">
+          <div class="item">
+            <div class="left">
+              <span class="tagDot dl"></span>
+              <div class="name">ubuntu-24.04.1-desktop-amd64.iso</div>
+            </div>
+            <div class="right">
+              <span class="miniPill">82%</span>
+              <span>↓3.2</span>
+              <span>12m</span>
+            </div>
+          </div>
+
+          <div class="item">
+            <div class="left">
+              <span class="tagDot dl"></span>
+              <div class="name">linux-kernel-sources.tar.xz</div>
+            </div>
+            <div class="right">
+              <span class="miniPill">9%</span>
+              <span>↓0.6</span>
+              <span>2h</span>
+            </div>
+          </div>
+
+          <div class="item">
+            <div class="left">
+              <span class="tagDot seed"></span>
+              <div class="name">public-domain-film-collection-1080p.mkv</div>
+            </div>
+            <div class="right">
+              <span class="miniPill">SEED</span>
+              <span>↑0.8</span>
+              <span>—</span>
+            </div>
+          </div>
+
+          <div class="item">
+            <div class="left">
+              <span class="tagDot pause"></span>
+              <div class="name">audio-library-pack.flac</div>
+            </div>
+            <div class="right">
+              <span class="miniPill">PAUSE</span>
+              <span>—</span>
+              <span>—</span>
+            </div>
+          </div>
+
+          <div class="item">
+            <div class="left">
+              <span class="tagDot err"></span>
+              <div class="name">something-weird-that-failed.bin</div>
+            </div>
+            <div class="right">
+              <span class="miniPill">ERROR</span>
+              <span>—</span>
+              <span>—</span>
+            </div>
+          </div>
+        </div>
+
+        <div class="actions">
+          <button class="btn ghost" type="button">Pause all</button>
+          <button class="btn" type="button">Open WebUI</button>
+        </div>
+      </div>
+
+    </div>
+  </div>
+</body>
+</html>
