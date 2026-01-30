@@ -471,5 +471,136 @@
 
     </div>
   </div>
+
+  <script>
+    let pollTimer;
+
+    // Format bytes to human-readable
+    function formatBytes(bytes) {
+      return (bytes / 1024 / 1024 / 1024).toFixed(1) + 'GB';
+    }
+
+    // Format speed (bytes/sec)
+    function formatSpeed(bps) {
+      const mbps = bps / 1024 / 1024;
+      return mbps >= 1 ? mbps.toFixed(1) : (bps / 1024).toFixed(1);
+    }
+
+    // Format ETA
+    function formatEta(seconds) {
+      if (!seconds || seconds <= 0) return '—';
+      const h = Math.floor(seconds / 3600);
+      const m = Math.floor((seconds % 3600) / 60);
+      return h > 0 ? `${h}h ${m}m` : `${m}m`;
+    }
+
+    // Update UI with fetched data
+    async function updateUI() {
+      try {
+        const [status, torrents] = await Promise.all([
+          fetch('/status').then(r => r.json()),
+          fetch('/torrents?limit=20').then(r => r.json())
+        ]);
+
+        // Update host label
+        document.querySelector('.host').textContent = status.host_label || 'unknown';
+
+        // Update overall status
+        const statusWord = document.querySelector('.statusWord');
+        const dot = document.querySelector('.dot');
+        if (status.overall === 'OK') {
+          statusWord.textContent = 'OK';
+          statusWord.style.color = 'var(--ok)';
+          dot.style.background = 'var(--ok)';
+        } else {
+          statusWord.textContent = 'ISSUE';
+          statusWord.style.color = 'var(--warn)';
+          dot.style.background = 'var(--warn)';
+        }
+
+        // Update last check
+        document.querySelector('.statusRight span:last-child').textContent =
+          status.last_check_s !== undefined ? `${status.last_check_s}s` : '—';
+
+        // Update VPN pill
+        const vpnPill = document.querySelectorAll('.pill')[0];
+        vpnPill.className = 'pill ' + (status.vpn.state === 'CONNECTED' ? 'ok' : 'bad');
+        vpnPill.innerHTML = `<span class="label">VPN</span> ${status.vpn.state}`;
+
+        // Update qB pill
+        const qbPill = document.querySelectorAll('.pill')[1];
+        qbPill.className = 'pill ' + (status.qb.state === 'REACHABLE' ? 'ok' : 'bad');
+        qbPill.innerHTML = `<span class="label">qB</span> ${status.qb.state}`;
+
+        // Update disk
+        const freePct = status.disk.free_pct.toFixed(1);
+        document.querySelector('.bar').style.width = freePct + '%';
+        document.querySelector('.bigMetric .num').textContent = freePct + '% free';
+        document.querySelector('.bigMetric .sub').textContent =
+          `${formatBytes(status.disk.free_bytes)} / ${formatBytes(status.disk.total_bytes)}`;
+
+        // Update torrents
+        const list = document.querySelector('.list');
+        if (torrents && torrents.length > 0) {
+          // Count by state
+          const dl = torrents.filter(t => t.state === 'downloading').length;
+          const seed = torrents.filter(t => t.state === 'seeding' || t.state === 'uploading').length;
+          const err = torrents.filter(t => t.state === 'error').length;
+          document.querySelector('.count').textContent = `Active ${dl} · Seed ${seed} · Err ${err}`;
+
+          list.innerHTML = torrents.slice(0, 20).map(t => {
+            let dotClass = 'tagDot ';
+            let statusText = '';
+            if (t.state === 'downloading') {
+              dotClass += 'dl';
+              statusText = `<span class="miniPill">${(t.progress * 100).toFixed(0)}%</span>
+                           <span>↓${formatSpeed(t.down_bps)}</span>
+                           <span>${formatEta(t.eta_s)}</span>`;
+            } else if (t.state === 'seeding' || t.state === 'uploading') {
+              dotClass += 'seed';
+              statusText = `<span class="miniPill">SEED</span>
+                           <span>↑${formatSpeed(t.up_bps)}</span>
+                           <span>—</span>`;
+            } else if (t.state === 'paused') {
+              dotClass += 'pause';
+              statusText = `<span class="miniPill">PAUSE</span><span>—</span><span>—</span>`;
+            } else {
+              dotClass += 'err';
+              statusText = `<span class="miniPill">ERROR</span><span>—</span><span>—</span>`;
+            }
+
+            return `<div class="item">
+              <div class="left">
+                <span class="${dotClass}"></span>
+                <div class="name">${t.name}</div>
+              </div>
+              <div class="right">${statusText}</div>
+            </div>`;
+          }).join('');
+        } else {
+          document.querySelector('.count').textContent = 'No torrents';
+          list.innerHTML = '<div style="padding:12px;color:var(--muted);font-family:var(--mono);font-size:12px">No active torrents</div>';
+        }
+
+        // Update Open WebUI button
+        document.querySelector('.btn:not(.ghost)').onclick = () => {
+          window.open(status.webui_url, '_blank');
+        };
+
+      } catch (err) {
+        console.error('Failed to fetch data:', err);
+      }
+    }
+
+    // Start polling
+    async function startPolling() {
+      const config = await fetch('/health').then(r => r.json());
+      updateUI();
+      pollTimer = setInterval(updateUI, 15000); // 15s default
+    }
+
+    // Init
+    startPolling();
+  </script>
 </body>
 </html>
