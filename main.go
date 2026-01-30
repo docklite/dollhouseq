@@ -16,7 +16,7 @@ import (
 	"golang.org/x/sys/unix"
 )
 
-const version = "0.1.0"
+const version = "0.2.0"
 
 //go:embed dollhouseq.html
 var htmlContent embed.FS
