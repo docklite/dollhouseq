@@ -1,0 +1,98 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: Build and Release
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.22'
+
+      - name: Get version from tag
+        id: version
+        run: echo "VERSION=${GITHUB_REF#refs/tags/v}" >> $GITHUB_OUTPUT
+
+      - name: Build binaries
+        run: |
+          # Build for linux/amd64
+          GOOS=linux GOARCH=amd64 go build -ldflags="-s -w -X main.version=${{ steps.version.outputs.VERSION }}" -o dollhouse-q-linux-amd64 .
+
+          # Build for linux/arm64
+          GOOS=linux GOARCH=arm64 go build -ldflags="-s -w -X main.version=${{ steps.version.outputs.VERSION }}" -o dollhouse-q-linux-arm64 .
+
+          # Build for linux/arm
+          GOOS=linux GOARCH=arm GOARM=7 go build -ldflags="-s -w -X main.version=${{ steps.version.outputs.VERSION }}" -o dollhouse-q-linux-arm .
+
+      - name: Create checksums
+        run: |
+          sha256sum dollhouse-q-linux-amd64 > checksums.txt
+          sha256sum dollhouse-q-linux-arm64 >> checksums.txt
+          sha256sum dollhouse-q-linux-arm >> checksums.txt
+
+      - name: Create Release
+        uses: softprops/action-gh-release@v1
+        with:
+          files: |
+            dollhouse-q-linux-amd64
+            dollhouse-q-linux-arm64
+            dollhouse-q-linux-arm
+            checksums.txt
+            config.example.json
+            dollhouse-q.service
+          body: |
+            ## Dollhouse q v${{ steps.version.outputs.VERSION }}
+
+            Lightweight qBittorrent monitoring dashboard - single binary, no dependencies.
+
+            ### Installation
+
+            1. Download the binary for your architecture
+            2. Make it executable: `chmod +x dollhouse-q-linux-*`
+            3. Copy to `/usr/local/bin/dollhouse-q`
+            4. Create config at `/etc/dollhouse-q/config.json` (see config.example.json)
+            5. Optional: Install systemd service (see dollhouse-q.service)
+
+            ### Binaries
+
+            - `dollhouse-q-linux-amd64` - For 64-bit x86 Linux (most servers)
+            - `dollhouse-q-linux-arm64` - For 64-bit ARM Linux (Raspberry Pi 4, etc.)
+            - `dollhouse-q-linux-arm` - For 32-bit ARM Linux (older Raspberry Pi)
+
+            ### Verify Downloads
+
+            ```bash
+            sha256sum -c checksums.txt
+            ```
+
+            ### Quick Start
+
+            ```bash
+            # Download and install (replace with your architecture)
+            wget https://github.com/docklite/dollhouseq/releases/download/v${{ steps.version.outputs.VERSION }}/dollhouse-q-linux-amd64
+            chmod +x dollhouse-q-linux-amd64
+            sudo mv dollhouse-q-linux-amd64 /usr/local/bin/dollhouse-q
+
+            # Create config
+            sudo mkdir -p /etc/dollhouse-q
+            wget https://github.com/docklite/dollhouseq/releases/download/v${{ steps.version.outputs.VERSION }}/config.example.json
+            sudo mv config.example.json /etc/dollhouse-q/config.json
+            sudo nano /etc/dollhouse-q/config.json  # Edit with your settings
+
+            # Run
+            dollhouse-q
+            ```
+          draft: false
+          prerelease: false
