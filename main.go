@@ -3,12 +3,15 @@ package main
 import (
 	"embed"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
 	"net/http/cookiejar"
 	"net/url"
 	"os"
+	"os/exec"
+	"path/filepath"
 	"strings"
 	"sync"
 	"time"
@@ -16,29 +19,69 @@ import (
 	"golang.org/x/sys/unix"
 )
 
-const version = "0.2.0"
+const version = "0.4.0"
 
-//go:embed dollhouseq.html
+//go:embed dollhouseq.html wizard.html
 var htmlContent embed.FS
 
 // Config represents the application configuration
 type Config struct {
-	ListenAddr       string `json:"listen_addr"`
-	QBUrl            string `json:"qb_url"`
-	QBUsername       string `json:"qb_username"`
-	QBPassword       string `json:"qb_password"`
-	WebUIUrl         string `json:"webui_url"`
-	DiskPath         string `json:"disk_path"`
-	GluetunHealthURL string `json:"gluetun_health_url"`
-	PollIntervalS    int    `json:"poll_interval_s"`
-	HostLabel        string `json:"host_label"`
+	ListenAddr       string          `json:"listen_addr"`
+	QBUrl            string          `json:"qb_url"`
+	QBUsername       string          `json:"qb_username"`
+	QBPassword       string          `json:"qb_password"`
+	WebUIUrl         string          `json:"webui_url"`
+	DiskPath         string          `json:"disk_path"`
+	GluetunHealthURL string          `json:"gluetun_health_url"`
+	PollIntervalS    int             `json:"poll_interval_s"`
+	HostLabel        string          `json:"host_label"`
+	Server           ServerConfig    `json:"server"`
+	Tailscale        TailscaleConfig `json:"tailscale"`
+	Docker           DockerConfig    `json:"docker"`
+	WizardCompleted  bool            `json:"wizard_completed"`
+}
+
+// ServerConfig contains server binding configuration
+type ServerConfig struct {
+	Port     int    `json:"port"`
+	BindMode string `json:"bind_mode"` // "localhost" or "tailnet"
+	BindAddr string `json:"bind_addr"` // resolved bind address
+}
+
+// TailscaleConfig contains Tailscale integration state
+type TailscaleConfig struct {
+	Enabled   bool   `json:"enabled"`
+	NodeName  string `json:"node_name"`
+	TailnetIP string `json:"tailnet_ip"`
+}
+
+// DockerConfig contains Docker integration state
+type DockerConfig struct {
+	Enabled bool `json:"enabled"`
 }
 
 // SetDefaults applies default values to config fields
 func (c *Config) SetDefaults() {
-	if c.ListenAddr == "" {
-		c.ListenAddr = "127.0.0.1:17666"
+	// Legacy support: if ListenAddr is set but Server.Port/BindAddr are not,
+	// parse ListenAddr and populate Server config
+	if c.ListenAddr != "" && c.Server.BindAddr == "" {
+		c.Server.BindAddr = c.ListenAddr
+		if c.Server.BindMode == "" {
+			c.Server.BindMode = "localhost"
+		}
 	}
+
+	if c.Server.BindAddr == "" {
+		c.Server.BindAddr = "127.0.0.1:17666"
+		c.Server.BindMode = "localhost"
+	}
+	if c.Server.Port == 0 {
+		c.Server.Port = 17666
+	}
+
+	// Sync ListenAddr with Server.BindAddr for backward compatibility
+	c.ListenAddr = c.Server.BindAddr
+
 	if c.QBUrl == "" {
 		c.QBUrl = "http://127.0.0.1:8080"
 	}
@@ -62,6 +105,46 @@ func (c *Config) Validate() error {
 		return fmt.Errorf("qb_password is required")
 	}
 	return nil
+}
+
+// NeedsWizard returns true if the onboarding wizard should run
+func (c *Config) NeedsWizard() bool {
+	// If wizard was explicitly completed, don't run it
+	if c.WizardCompleted {
+		return false
+	}
+
+	// If essential fields are missing, wizard is needed
+	if c.QBUsername == "" || c.QBPassword == "" {
+		return true
+	}
+
+	return false
+}
+
+// System Detection Structures
+
+type DetectionResult struct {
+	App       AppDetection       `json:"app"`
+	Tailscale TailscaleDetection `json:"tailscale"`
+	Docker    DockerDetection    `json:"docker"`
+}
+
+type AppDetection struct {
+	Installed bool `json:"installed"`
+	Running   bool `json:"running"`
+}
+
+type TailscaleDetection struct {
+	Installed bool   `json:"installed"`
+	Connected bool   `json:"connected"`
+	NodeName  string `json:"node_name,omitempty"`
+	TailnetIP string `json:"tailnet_ip,omitempty"`
+}
+
+type DockerDetection struct {
+	Installed bool `json:"installed"`
+	Running   bool `json:"running"`
 }
 
 // API Response Structures
@@ -538,16 +621,237 @@ func (s *Server) handleResumeAll(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(map[string]bool{"ok": true})
 }
 
+// System Detection Functions
+
+func detectSystem() DetectionResult {
+	return DetectionResult{
+		App:       detectApp(),
+		Tailscale: detectTailscale(),
+		Docker:    detectDocker(),
+	}
+}
+
+func detectApp() AppDetection {
+	return AppDetection{
+		Installed: true, // If we're running, we're installed
+		Running:   true,
+	}
+}
+
+func detectTailscale() TailscaleDetection {
+	result := TailscaleDetection{}
+
+	// Check if tailscale command exists
+	if _, err := exec.LookPath("tailscale"); err != nil {
+		return result
+	}
+	result.Installed = true
+
+	// Check if connected by getting Tailscale IP
+	cmd := exec.Command("tailscale", "ip", "-4")
+	output, err := cmd.Output()
+	if err != nil {
+		return result
+	}
+
+	tailnetIP := strings.TrimSpace(string(output))
+	if tailnetIP != "" {
+		result.Connected = true
+		result.TailnetIP = tailnetIP
+
+		// Get node name from status
+		statusCmd := exec.Command("tailscale", "status", "--json")
+		statusOutput, err := statusCmd.Output()
+		if err == nil {
+			var status struct {
+				Self struct {
+					DNSName string `json:"DNSName"`
+				} `json:"Self"`
+			}
+			if json.Unmarshal(statusOutput, &status) == nil {
+				// DNSName is like "hostname.tailnet-name.ts.net."
+				nodeName := strings.TrimSuffix(status.Self.DNSName, ".")
+				nodeName = strings.Split(nodeName, ".")[0]
+				result.NodeName = nodeName
+			}
+		}
+	}
+
+	return result
+}
+
+func detectDocker() DockerDetection {
+	result := DockerDetection{}
+
+	// Check if docker command exists
+	if _, err := exec.LookPath("docker"); err != nil {
+		return result
+	}
+	result.Installed = true
+
+	// Check if docker is running
+	cmd := exec.Command("docker", "info")
+	if err := cmd.Run(); err == nil {
+		result.Running = true
+	}
+
+	return result
+}
+
+// Config persistence helpers
+
+var configPathOverride string
+
+func setConfigPath(path string) {
+	configPathOverride = path
+}
+
+func getConfigPath() string {
+	if configPathOverride != "" {
+		return configPathOverride
+	}
+	return "/etc/dollhouse-q/config.json"
+}
+
+func saveConfig(cfg *Config, path string) error {
+	data, err := json.MarshalIndent(cfg, "", "  ")
+	if err != nil {
+		return fmt.Errorf("marshal config: %w", err)
+	}
+
+	// Ensure directory exists
+	dir := filepath.Dir(path)
+	if err := os.MkdirAll(dir, 0755); err != nil {
+		return fmt.Errorf("create config directory: %w", err)
+	}
+
+	// Write to temp file first, then rename (atomic)
+	tempPath := path + ".tmp"
+	if err := os.WriteFile(tempPath, data, 0600); err != nil {
+		return fmt.Errorf("write temp config: %w", err)
+	}
+
+	if err := os.Rename(tempPath, path); err != nil {
+		os.Remove(tempPath)
+		return fmt.Errorf("rename config: %w", err)
+	}
+
+	return nil
+}
+
+// handleWizard serves the wizard UI
+func (s *Server) handleWizard(w http.ResponseWriter, r *http.Request) {
+	content, err := htmlContent.ReadFile("wizard.html")
+	if err != nil {
+		http.Error(w, "Wizard UI not found", http.StatusInternalServerError)
+		return
+	}
+
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	w.Write(content)
+}
+
+// handleWizardDetect performs system detection
+func (s *Server) handleWizardDetect(w http.ResponseWriter, r *http.Request) {
+	result := detectSystem()
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(result)
+}
+
+// handleWizardConfigure saves wizard configuration
+func (s *Server) handleWizardConfigure(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	var updates Config
+	if err := json.NewDecoder(r.Body).Decode(&updates); err != nil {
+		http.Error(w, "Invalid request", http.StatusBadRequest)
+		return
+	}
+
+	// Merge updates into current config
+	if updates.QBUrl != "" {
+		s.config.QBUrl = updates.QBUrl
+	}
+	if updates.QBUsername != "" {
+		s.config.QBUsername = updates.QBUsername
+	}
+	if updates.QBPassword != "" {
+		s.config.QBPassword = updates.QBPassword
+	}
+	if updates.WebUIUrl != "" {
+		s.config.WebUIUrl = updates.WebUIUrl
+	}
+	if updates.Server.BindMode != "" {
+		s.config.Server.BindMode = updates.Server.BindMode
+	}
+	if updates.Server.BindAddr != "" {
+		s.config.Server.BindAddr = updates.Server.BindAddr
+		s.config.ListenAddr = updates.Server.BindAddr
+	}
+	if updates.Tailscale.Enabled {
+		s.config.Tailscale = updates.Tailscale
+	}
+	if updates.Docker.Enabled {
+		s.config.Docker = updates.Docker
+	}
+
+	s.config.WizardCompleted = true
+
+	// Save config to disk
+	if err := saveConfig(s.config, getConfigPath()); err != nil {
+		http.Error(w, fmt.Sprintf("Failed to save config: %v", err), http.StatusInternalServerError)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]bool{"ok": true, "restarting": true})
+
+	// Re-exec ourselves after a short delay so the response is sent first.
+	// The new process will read the updated config from disk.
+	go func() {
+		time.Sleep(500 * time.Millisecond)
+		self, err := os.Executable()
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "restart: cannot find executable: %v\n", err)
+			return
+		}
+		fmt.Println("Restarting with updated config...")
+		cmd := exec.Command(self, getConfigPath())
+		cmd.Stdout = os.Stdout
+		cmd.Stderr = os.Stderr
+		if err := cmd.Start(); err != nil {
+			fmt.Fprintf(os.Stderr, "restart: %v\n", err)
+			return
+		}
+		os.Exit(0)
+	}()
+}
+
 // setupRoutes configures HTTP routes
 func (s *Server) setupRoutes() *http.ServeMux {
 	mux := http.NewServeMux()
 
-	mux.HandleFunc("/", s.handleUI)
+	// Redirect to wizard if needed
+	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+		if s.config.NeedsWizard() && r.URL.Path == "/" {
+			http.Redirect(w, r, "/wizard", http.StatusTemporaryRedirect)
+			return
+		}
+		s.handleUI(w, r)
+	})
+
+	mux.HandleFunc("/wizard", s.handleWizard)
 	mux.HandleFunc("/health", s.handleHealth)
 	mux.HandleFunc("/status", s.handleStatus)
 	mux.HandleFunc("/torrents", s.handleTorrents)
 	mux.HandleFunc("/actions/pause_all", s.handlePauseAll)
 	mux.HandleFunc("/actions/resume_all", s.handleResumeAll)
+	mux.HandleFunc("/api/wizard/detect", s.handleWizardDetect)
+	mux.HandleFunc("/api/wizard/configure", s.handleWizardConfigure)
 
 	return mux
 }
@@ -566,8 +870,11 @@ func loadConfig(path string) (*Config, error) {
 	}
 
 	cfg.SetDefaults()
-	if err := cfg.Validate(); err != nil {
-		return nil, fmt.Errorf("invalid config: %w", err)
+	// Skip validation if wizard is needed — creds will be set during setup
+	if !cfg.NeedsWizard() {
+		if err := cfg.Validate(); err != nil {
+			return nil, fmt.Errorf("invalid config: %w", err)
+		}
 	}
 
 	return &cfg, nil
@@ -585,16 +892,28 @@ func main() {
 		configPath = os.Args[1]
 	}
 
+	setConfigPath(configPath)
+
 	cfg, err := loadConfig(configPath)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "Error loading config: %v\n", err)
-		os.Exit(1)
+		// If config doesn't exist, create a minimal one for wizard
+		if errors.Is(err, os.ErrNotExist) {
+			cfg = &Config{}
+			cfg.SetDefaults()
+		} else {
+			fmt.Fprintf(os.Stderr, "Error loading config: %v\n", err)
+			os.Exit(1)
+		}
 	}
 
 	server := NewServer(cfg)
-	if err := server.qbClient.Login(); err != nil {
-		fmt.Fprintf(os.Stderr, "Warning: Failed to authenticate with qBittorrent: %v\n", err)
-		fmt.Fprintln(os.Stderr, "Continuing anyway - will retry on first request")
+
+	// Skip qBittorrent login if wizard is needed
+	if !cfg.NeedsWizard() {
+		if err := server.qbClient.Login(); err != nil {
+			fmt.Fprintf(os.Stderr, "Warning: Failed to authenticate with qBittorrent: %v\n", err)
+			fmt.Fprintln(os.Stderr, "Continuing anyway - will retry on first request")
+		}
 	}
 
 	mux := server.setupRoutes()

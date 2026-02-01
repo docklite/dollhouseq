@@ -1,0 +1,866 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Dollhouse q Setup</title>
+    <style>
+        :root {
+            --bg: #1a1625;
+            --card: #2a2435;
+            --text: #e8e4f0;
+            --text-dim: #9b95aa;
+            --pink: #ff4fd8;
+            --cyan: #58ffcc;
+            --ok: #58ffcc;
+            --warn: #ffd36b;
+            --bad: #ff4f6d;
+            --border: #3a3445;
+        }
+
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            background: var(--bg);
+            color: var(--text);
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            padding: 2rem;
+            line-height: 1.6;
+        }
+
+        .container {
+            max-width: 800px;
+            margin: 0 auto;
+        }
+
+        h1 {
+            font-size: 2rem;
+            margin-bottom: 0.5rem;
+            background: linear-gradient(135deg, var(--pink), var(--cyan));
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            background-clip: text;
+        }
+
+        .subtitle {
+            color: var(--text-dim);
+            margin-bottom: 2rem;
+        }
+
+        .phase-indicator {
+            display: flex;
+            justify-content: space-between;
+            margin-bottom: 2rem;
+            padding: 1rem;
+            background: var(--card);
+            border-radius: 8px;
+            border: 1px solid var(--border);
+        }
+
+        .phase-step {
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            gap: 0.5rem;
+            flex: 1;
+            position: relative;
+        }
+
+        .phase-step:not(:last-child)::after {
+            content: '';
+            position: absolute;
+            top: 14px;
+            left: calc(50% + 20px);
+            width: calc(100% - 40px);
+            height: 2px;
+            background: var(--border);
+        }
+
+        .phase-step.active .phase-num {
+            background: var(--pink);
+            color: white;
+        }
+
+        .phase-step.completed .phase-num {
+            background: var(--ok);
+            color: var(--bg);
+        }
+
+        .phase-num {
+            width: 28px;
+            height: 28px;
+            border-radius: 50%;
+            background: var(--border);
+            color: var(--text-dim);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 0.8rem;
+            font-weight: 600;
+            z-index: 1;
+        }
+
+        .phase-label {
+            font-size: 0.75rem;
+            color: var(--text-dim);
+            text-align: center;
+        }
+
+        .phase-step.active .phase-label {
+            color: var(--pink);
+        }
+
+        .card {
+            background: var(--card);
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            padding: 1.5rem;
+            margin-bottom: 1.5rem;
+        }
+
+        .card h2 {
+            font-size: 1.25rem;
+            margin-bottom: 1rem;
+            color: var(--pink);
+        }
+
+        .check-item {
+            display: flex;
+            align-items: center;
+            gap: 0.75rem;
+            padding: 0.75rem;
+            margin-bottom: 0.5rem;
+            background: var(--bg);
+            border-radius: 6px;
+            border: 1px solid var(--border);
+        }
+
+        .check-icon {
+            width: 20px;
+            height: 20px;
+            border-radius: 50%;
+            flex-shrink: 0;
+        }
+
+        .check-icon.pending {
+            background: var(--border);
+        }
+
+        .check-icon.ok {
+            background: var(--ok);
+        }
+
+        .check-icon.bad {
+            background: var(--bad);
+        }
+
+        .check-label {
+            flex: 1;
+            font-size: 0.95rem;
+        }
+
+        .check-status {
+            font-size: 0.85rem;
+            color: var(--text-dim);
+        }
+
+        .btn {
+            padding: 0.75rem 1.5rem;
+            border: none;
+            border-radius: 6px;
+            font-size: 0.95rem;
+            font-weight: 500;
+            cursor: pointer;
+            transition: all 0.2s;
+        }
+
+        .btn:disabled {
+            opacity: 0.5;
+            cursor: not-allowed;
+        }
+
+        .btn-primary {
+            background: var(--pink);
+            color: white;
+        }
+
+        .btn-primary:hover:not(:disabled) {
+            background: #ff6fe0;
+        }
+
+        .btn-secondary {
+            background: var(--cyan);
+            color: var(--bg);
+        }
+
+        .btn-secondary:hover:not(:disabled) {
+            background: #6fffd4;
+        }
+
+        .btn-outline {
+            background: transparent;
+            color: var(--pink);
+            border: 1px solid var(--pink);
+        }
+
+        .btn-outline:hover:not(:disabled) {
+            background: rgba(255, 79, 216, 0.1);
+        }
+
+        .btn-group {
+            display: flex;
+            gap: 0.75rem;
+            margin-top: 1rem;
+        }
+
+        .input-group {
+            margin-bottom: 1rem;
+        }
+
+        .input-group label {
+            display: block;
+            margin-bottom: 0.5rem;
+            font-size: 0.9rem;
+            color: var(--text-dim);
+        }
+
+        .input-group input,
+        .input-group select {
+            width: 100%;
+            padding: 0.75rem;
+            background: var(--bg);
+            border: 1px solid var(--border);
+            border-radius: 6px;
+            color: var(--text);
+            font-size: 0.95rem;
+            font-family: inherit;
+        }
+
+        .input-group input:focus,
+        .input-group select:focus {
+            outline: none;
+            border-color: var(--pink);
+        }
+
+        .command-output {
+            background: var(--bg);
+            border: 1px solid var(--border);
+            border-radius: 6px;
+            padding: 1rem;
+            margin-top: 1rem;
+            font-family: 'Monaco', 'Menlo', 'Courier New', monospace;
+            font-size: 0.85rem;
+            max-height: 300px;
+            overflow-y: auto;
+            white-space: pre-wrap;
+            word-break: break-all;
+            display: none;
+        }
+
+        .command-output.visible {
+            display: block;
+        }
+
+        .command-output-line {
+            margin-bottom: 0.25rem;
+        }
+
+        .info-box {
+            background: rgba(88, 255, 204, 0.1);
+            border: 1px solid var(--cyan);
+            border-radius: 6px;
+            padding: 1rem;
+            margin-top: 1rem;
+        }
+
+        .info-box.warn {
+            background: rgba(255, 211, 107, 0.1);
+            border-color: var(--warn);
+        }
+
+        .info-box-title {
+            font-weight: 600;
+            margin-bottom: 0.5rem;
+            color: var(--cyan);
+        }
+
+        .info-box.warn .info-box-title {
+            color: var(--warn);
+        }
+
+        .code {
+            background: var(--bg);
+            padding: 0.5rem 0.75rem;
+            border-radius: 4px;
+            font-family: 'Monaco', 'Menlo', 'Courier New', monospace;
+            font-size: 0.85rem;
+            display: inline-block;
+            margin: 0.25rem 0;
+        }
+
+        .copy-btn {
+            background: transparent;
+            border: 1px solid var(--border);
+            color: var(--text-dim);
+            padding: 0.25rem 0.5rem;
+            font-size: 0.75rem;
+            margin-left: 0.5rem;
+            cursor: pointer;
+            border-radius: 4px;
+        }
+
+        .copy-btn:hover {
+            border-color: var(--pink);
+            color: var(--pink);
+        }
+
+        .hidden {
+            display: none;
+        }
+
+        .radio-group {
+            display: flex;
+            flex-direction: column;
+            gap: 0.75rem;
+        }
+
+        .radio-option {
+            display: flex;
+            align-items: start;
+            gap: 0.75rem;
+            padding: 1rem;
+            background: var(--bg);
+            border: 1px solid var(--border);
+            border-radius: 6px;
+            cursor: pointer;
+            transition: all 0.2s;
+        }
+
+        .radio-option:hover {
+            border-color: var(--pink);
+        }
+
+        .radio-option input[type="radio"] {
+            margin-top: 0.25rem;
+        }
+
+        .radio-option-content {
+            flex: 1;
+        }
+
+        .radio-option-title {
+            font-weight: 600;
+            margin-bottom: 0.25rem;
+        }
+
+        .radio-option-desc {
+            font-size: 0.85rem;
+            color: var(--text-dim);
+        }
+
+        .loading {
+            display: inline-block;
+            width: 16px;
+            height: 16px;
+            border: 2px solid var(--border);
+            border-top-color: var(--pink);
+            border-radius: 50%;
+            animation: spin 0.6s linear infinite;
+        }
+
+        @keyframes spin {
+            to { transform: rotate(360deg); }
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>Dollhouse q Setup</h1>
+        <p class="subtitle">Let's get your qBittorrent monitoring dashboard configured</p>
+
+        <div class="phase-indicator">
+            <div class="phase-step active" data-phase="1">
+                <div class="phase-num">1</div>
+                <div class="phase-label">System Check</div>
+            </div>
+            <div class="phase-step" data-phase="2">
+                <div class="phase-num">2</div>
+                <div class="phase-label">Tailscale</div>
+            </div>
+            <div class="phase-step" data-phase="3">
+                <div class="phase-num">3</div>
+                <div class="phase-label">Access</div>
+            </div>
+            <div class="phase-step" data-phase="4">
+                <div class="phase-num">4</div>
+                <div class="phase-label">Docker</div>
+            </div>
+            <div class="phase-step" data-phase="5">
+                <div class="phase-num">5</div>
+                <div class="phase-label">Finish</div>
+            </div>
+        </div>
+
+        <!-- Phase 1: System Check -->
+        <div id="phase-1" class="phase-content">
+            <div class="card">
+                <h2>System Check</h2>
+                <div class="check-item">
+                    <div class="check-icon pending" id="check-app"></div>
+                    <div class="check-label">App service</div>
+                    <div class="check-status" id="status-app">Checking...</div>
+                </div>
+                <div class="check-item">
+                    <div class="check-icon pending" id="check-tailscale"></div>
+                    <div class="check-label">Tailscale</div>
+                    <div class="check-status" id="status-tailscale">Checking...</div>
+                </div>
+                <div class="check-item">
+                    <div class="check-icon pending" id="check-docker"></div>
+                    <div class="check-label">Docker</div>
+                    <div class="check-status" id="status-docker">Checking...</div>
+                </div>
+                <div class="btn-group">
+                    <button class="btn btn-primary" id="btn-phase1-next">Continue</button>
+                </div>
+            </div>
+        </div>
+
+        <!-- Phase 2: Tailscale Setup -->
+        <div id="phase-2" class="phase-content hidden">
+            <!-- Content populated dynamically based on detection -->
+        </div>
+
+        <!-- Phase 3: Access Mode -->
+        <div id="phase-3" class="phase-content hidden">
+            <div class="card">
+                <h2>Access Mode</h2>
+                <p style="margin-bottom: 1rem; color: var(--text-dim);">How should the control panel be accessible?</p>
+
+                <div class="radio-group">
+                    <label class="radio-option">
+                        <input type="radio" name="access-mode" value="localhost" checked>
+                        <div class="radio-option-content">
+                            <div class="radio-option-title">Localhost only (Recommended)</div>
+                            <div class="radio-option-desc">Access via SSH tunnel. Most secure, works everywhere.</div>
+                        </div>
+                    </label>
+                    <label class="radio-option">
+                        <input type="radio" name="access-mode" value="tailnet" id="radio-tailnet">
+                        <div class="radio-option-content">
+                            <div class="radio-option-title">Tailnet-only direct access</div>
+                            <div class="radio-option-desc">Direct access from your Tailscale network. Requires Tailscale connected.</div>
+                        </div>
+                    </label>
+                </div>
+
+                <div class="btn-group">
+                    <button class="btn btn-outline" id="btn-phase3-back">Back</button>
+                    <button class="btn btn-primary" id="btn-phase3-next">Continue</button>
+                </div>
+            </div>
+        </div>
+
+        <!-- Phase 4: Docker Setup -->
+        <div id="phase-4" class="phase-content hidden">
+            <!-- Content populated dynamically -->
+        </div>
+
+        <!-- Phase 5: Finish -->
+        <div id="phase-5" class="phase-content hidden">
+            <div class="card">
+                <h2>qBittorrent Credentials</h2>
+                <p style="margin-bottom: 1rem; color: var(--text-dim);">Enter your qBittorrent Web UI login details.</p>
+
+                <div style="display: flex; flex-direction: column; gap: 0.75rem; margin-bottom: 1.5rem;">
+                    <div>
+                        <label style="display: block; font-size: 0.85rem; color: var(--text-dim); margin-bottom: 0.25rem;">URL</label>
+                        <input type="text" id="qb-url" value="http://127.0.0.1:8081" style="width: 100%; padding: 0.6rem 0.75rem; background: var(--bg-card); border: 1px solid var(--border); border-radius: 6px; color: var(--text); font-size: 0.95rem; box-sizing: border-box;">
+                    </div>
+                    <div>
+                        <label style="display: block; font-size: 0.85rem; color: var(--text-dim); margin-bottom: 0.25rem;">Username</label>
+                        <input type="text" id="qb-username" value="admin" style="width: 100%; padding: 0.6rem 0.75rem; background: var(--bg-card); border: 1px solid var(--border); border-radius: 6px; color: var(--text); font-size: 0.95rem; box-sizing: border-box;">
+                    </div>
+                    <div>
+                        <label style="display: block; font-size: 0.85rem; color: var(--text-dim); margin-bottom: 0.25rem;">Password</label>
+                        <input type="password" id="qb-password" style="width: 100%; padding: 0.6rem 0.75rem; background: var(--bg-card); border: 1px solid var(--border); border-radius: 6px; color: var(--text); font-size: 0.95rem; box-sizing: border-box;">
+                    </div>
+                </div>
+
+                <div id="finish-urls">
+                    <!-- URLs populated dynamically -->
+                </div>
+
+                <div class="btn-group">
+                    <button class="btn btn-primary" id="btn-finish">Finish Setup</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        // State management
+        const state = {
+            currentPhase: 1,
+            systemCheck: {},
+            tailscaleConnected: false,
+            tailscaleInfo: {},
+            accessMode: 'localhost',
+            dockerEnabled: false
+        };
+
+        // Phase navigation
+        function setPhase(phase) {
+            state.currentPhase = phase;
+
+            // Update phase indicator
+            document.querySelectorAll('.phase-step').forEach(step => {
+                const stepNum = parseInt(step.dataset.phase);
+                step.classList.remove('active', 'completed');
+                if (stepNum === phase) {
+                    step.classList.add('active');
+                } else if (stepNum < phase) {
+                    step.classList.add('completed');
+                }
+            });
+
+            // Show/hide phase content
+            document.querySelectorAll('.phase-content').forEach(content => {
+                content.classList.add('hidden');
+            });
+            document.getElementById(`phase-${phase}`).classList.remove('hidden');
+        }
+
+        // API helpers
+        async function api(endpoint, options = {}) {
+            const response = await fetch(`/api/wizard${endpoint}`, {
+                ...options,
+                headers: {
+                    'Content-Type': 'application/json',
+                    ...(options.headers || {})
+                }
+            });
+            if (!response.ok) {
+                throw new Error(`API error: ${response.statusText}`);
+            }
+            return response.json();
+        }
+
+        // System detection
+        async function detectSystem() {
+            try {
+                const result = await api('/detect');
+                state.systemCheck = result;
+
+                // Update UI
+                updateCheckStatus('app', result.app.installed ? 'ok' : 'bad',
+                    result.app.installed ? 'Installed' : 'Not found');
+                updateCheckStatus('tailscale', getTailscaleStatus(result.tailscale),
+                    getTailscaleLabel(result.tailscale));
+                updateCheckStatus('docker', getDockerStatus(result.docker),
+                    getDockerLabel(result.docker));
+
+                state.tailscaleConnected = result.tailscale.connected;
+                if (result.tailscale.connected) {
+                    state.tailscaleInfo = result.tailscale;
+                }
+            } catch (err) {
+                console.error('Detection failed:', err);
+            }
+        }
+
+        function updateCheckStatus(id, status, label) {
+            const icon = document.getElementById(`check-${id}`);
+            const statusEl = document.getElementById(`status-${id}`);
+            icon.className = `check-icon ${status}`;
+            statusEl.textContent = label;
+        }
+
+        function getTailscaleStatus(ts) {
+            if (ts.connected) return 'ok';
+            if (ts.installed) return 'warn';
+            return 'bad';
+        }
+
+        function getTailscaleLabel(ts) {
+            if (ts.connected) return 'Connected';
+            if (ts.installed) return 'Installed, not connected';
+            return 'Not installed';
+        }
+
+        function getDockerStatus(docker) {
+            if (docker.running) return 'ok';
+            if (docker.installed) return 'warn';
+            return 'bad';
+        }
+
+        function getDockerLabel(docker) {
+            if (docker.running) return 'Running';
+            if (docker.installed) return 'Installed, not running';
+            return 'Not installed';
+        }
+
+        // Event listeners
+        document.getElementById('btn-phase1-next').addEventListener('click', () => {
+            // Skip Tailscale phase if already connected
+            if (state.tailscaleConnected) {
+                setPhase(3);
+            } else {
+                buildTailscalePhase();
+                setPhase(2);
+            }
+        });
+
+        document.getElementById('btn-phase3-back').addEventListener('click', () => {
+            setPhase(state.tailscaleConnected ? 1 : 2);
+        });
+
+        document.getElementById('btn-phase3-next').addEventListener('click', () => {
+            state.accessMode = document.querySelector('input[name="access-mode"]:checked').value;
+            buildDockerPhase();
+            setPhase(4);
+        });
+
+        document.getElementById('btn-finish').addEventListener('click', async () => {
+            const btn = document.getElementById('btn-finish');
+            const qbUrl = document.getElementById('qb-url').value.trim();
+            const qbUsername = document.getElementById('qb-username').value.trim();
+            const qbPassword = document.getElementById('qb-password').value.trim();
+
+            if (!qbUrl || !qbUsername || !qbPassword) {
+                btn.style.borderColor = 'var(--bad)';
+                btn.style.color = 'var(--bad)';
+                setTimeout(() => { btn.style.borderColor = ''; btn.style.color = ''; }, 2000);
+                return;
+            }
+
+            btn.disabled = true;
+            btn.textContent = 'Saving...';
+
+            try {
+                const payload = {
+                    qb_url: qbUrl,
+                    qb_username: qbUsername,
+                    qb_password: qbPassword,
+                    webui_url: qbUrl,
+                    server: {
+                        bind_mode: state.accessMode,
+                        bind_addr: state.accessMode === 'localhost' ? '127.0.0.1:17666' : `${state.tailscaleInfo.tailnet_ip}:17666`
+                    }
+                };
+                if (state.tailscaleInfo.tailnet_ip) {
+                    payload.tailscale = {
+                        enabled: true,
+                        node_name: state.tailscaleInfo.node_name,
+                        tailnet_ip: state.tailscaleInfo.tailnet_ip
+                    };
+                }
+                await api('/configure', { method: 'POST', body: JSON.stringify(payload) });
+            } catch (e) {
+                console.error('Configure failed:', e);
+            }
+
+            btn.textContent = 'Restarting...';
+
+            if (state.accessMode === 'tailnet') {
+                // Server is moving to the Tailscale IP — we can't poll it via this tunnel anymore.
+                // Show the new URLs and let the user open them directly.
+                await new Promise(r => setTimeout(r, 2000));
+                const card = document.querySelector('.card');
+                card.innerHTML = `
+                    <h2>You're all set!</h2>
+                    <p style="margin-bottom: 1rem; color: var(--text-dim);">The server has restarted on your Tailscale network. Open one of these URLs from any device on your tailnet:</p>
+                    <div class="info-box" style="margin-bottom: 1rem;">
+                        <div class="info-box-title">MagicDNS</div>
+                        <div class="code">http://${state.tailscaleInfo.node_name}:17666 <button class="copy-btn" onclick="copyText('http://${state.tailscaleInfo.node_name}:17666')">Copy</button></div>
+                    </div>
+                    <div class="info-box">
+                        <div class="info-box-title">Tailscale IP</div>
+                        <div class="code">http://${state.tailscaleInfo.tailnet_ip}:17666 <button class="copy-btn" onclick="copyText('http://${state.tailscaleInfo.tailnet_ip}:17666')">Copy</button></div>
+                    </div>
+                `;
+            } else {
+                // Localhost mode — server restarts on the same address, just wait for it.
+                for (let i = 0; i < 10; i++) {
+                    await new Promise(r => setTimeout(r, 1000));
+                    try {
+                        const res = await fetch('/health');
+                        if (res.ok) {
+                            window.location.href = '/';
+                            return;
+                        }
+                    } catch (e) { /* not up yet */ }
+                }
+                btn.textContent = 'Finish Setup';
+                btn.disabled = false;
+            }
+        });
+
+        function buildTailscalePhase() {
+            const phase2 = document.getElementById('phase-2');
+            const ts = state.systemCheck.tailscale;
+
+            let content = '<div class="card"><h2>Tailscale Setup</h2>';
+
+            if (!ts.installed) {
+                content += `
+                    <p style="margin-bottom: 1rem; color: var(--text-dim);">Tailscale is not installed. Would you like to install it?</p>
+                    <div class="btn-group">
+                        <button class="btn btn-outline" id="btn-skip-tailscale">Skip for now</button>
+                        <button class="btn btn-primary" id="btn-install-tailscale">Install Tailscale</button>
+                    </div>
+                    <div class="command-output" id="install-output"></div>
+                `;
+            } else if (!ts.connected) {
+                content += `
+                    <p style="margin-bottom: 1rem; color: var(--text-dim);">Tailscale is installed but not connected. Choose a connection method:</p>
+                    <div class="radio-group" style="margin-bottom: 1rem;">
+                        <label class="radio-option">
+                            <input type="radio" name="tailscale-connect" value="interactive" checked>
+                            <div class="radio-option-content">
+                                <div class="radio-option-title">Interactive login</div>
+                                <div class="radio-option-desc">We'll give you a login URL to visit in your browser</div>
+                            </div>
+                        </label>
+                        <label class="radio-option">
+                            <input type="radio" name="tailscale-connect" value="authkey">
+                            <div class="radio-option-content">
+                                <div class="radio-option-title">Auth key</div>
+                                <div class="radio-option-desc">Use a pre-generated auth key (headless mode)</div>
+                            </div>
+                        </label>
+                    </div>
+                    <div id="authkey-input" class="hidden">
+                        <div class="input-group">
+                            <label>Auth Key</label>
+                            <input type="password" id="input-authkey" placeholder="tskey-auth-...">
+                        </div>
+                    </div>
+                    <div class="btn-group">
+                        <button class="btn btn-outline" id="btn-skip-tailscale">Skip for now</button>
+                        <button class="btn btn-primary" id="btn-connect-tailscale">Connect</button>
+                    </div>
+                    <div class="command-output" id="connect-output"></div>
+                `;
+            }
+
+            content += '</div>';
+            phase2.innerHTML = content;
+
+            // Add event listeners
+            const skipBtn = document.getElementById('btn-skip-tailscale');
+            if (skipBtn) {
+                skipBtn.addEventListener('click', () => setPhase(3));
+            }
+
+            // Tailscale connect method selector
+            const connectRadios = document.querySelectorAll('input[name="tailscale-connect"]');
+            connectRadios.forEach(radio => {
+                radio.addEventListener('change', (e) => {
+                    const authkeyInput = document.getElementById('authkey-input');
+                    if (e.target.value === 'authkey') {
+                        authkeyInput.classList.remove('hidden');
+                    } else {
+                        authkeyInput.classList.add('hidden');
+                    }
+                });
+            });
+        }
+
+        function buildDockerPhase() {
+            const phase4 = document.getElementById('phase-4');
+            const docker = state.systemCheck.docker;
+
+            let content = '<div class="card"><h2>Docker Setup</h2>';
+
+            if (!docker.installed) {
+                content += `
+                    <p style="margin-bottom: 1rem; color: var(--text-dim);">Docker is not installed. This is optional for monitoring qBittorrent.</p>
+                    <div class="btn-group">
+                        <button class="btn btn-outline" id="btn-skip-docker">Skip</button>
+                        <button class="btn btn-secondary" id="btn-install-docker">Install Docker</button>
+                    </div>
+                `;
+            } else {
+                content += `
+                    <p style="margin-bottom: 1rem; color: var(--text-dim);">Docker is installed. Enable container features?</p>
+                    <div class="btn-group">
+                        <button class="btn btn-outline" id="btn-skip-docker">No, skip</button>
+                        <button class="btn btn-secondary" id="btn-enable-docker">Yes, enable</button>
+                    </div>
+                `;
+            }
+
+            content += '</div>';
+            phase4.innerHTML = content;
+
+            // Event listeners
+            document.getElementById('btn-skip-docker').addEventListener('click', () => {
+                buildFinishPhase();
+                setPhase(5);
+            });
+
+            const enableBtn = document.getElementById('btn-enable-docker');
+            if (enableBtn) {
+                enableBtn.addEventListener('click', () => {
+                    state.dockerEnabled = true;
+                    buildFinishPhase();
+                    setPhase(5);
+                });
+            }
+
+            const installBtn = document.getElementById('btn-install-docker');
+            if (installBtn) {
+                installBtn.addEventListener('click', () => {
+                    buildFinishPhase();
+                    setPhase(5);
+                });
+            }
+        }
+
+        function buildFinishPhase() {
+            const urlsDiv = document.getElementById('finish-urls');
+            let html = '';
+
+            if (state.accessMode === 'localhost') {
+                const tunnelCmd = `ssh -N -L 17666:127.0.0.1:17666 user@${state.tailscaleInfo.node_name || 'your-server'}`;
+                html = `
+                    <div class="info-box">
+                        <div class="info-box-title">Access via SSH Tunnel</div>
+                        <p style="margin-bottom: 0.5rem; font-size: 0.9rem;">Run this command on your local machine:</p>
+                        <div class="code">${tunnelCmd} <button class="copy-btn" onclick="copyText('${tunnelCmd}')">Copy</button></div>
+                        <p style="margin-top: 0.5rem; font-size: 0.9rem;">Then open: <a href="http://localhost:17666" style="color: var(--cyan);">http://localhost:17666</a></p>
+                    </div>
+                `;
+            } else if (state.accessMode === 'tailnet') {
+                const magicDNS = `http://${state.tailscaleInfo.node_name}:17666`;
+                const ipURL = `http://${state.tailscaleInfo.tailnet_ip}:17666`;
+                html = `
+                    <div class="info-box">
+                        <div class="info-box-title">Direct Tailnet Access</div>
+                        <p style="margin-bottom: 0.5rem; font-size: 0.9rem;">Primary URL (MagicDNS):</p>
+                        <div class="code">${magicDNS} <button class="copy-btn" onclick="copyText('${magicDNS}')">Copy</button></div>
+                        <p style="margin-top: 0.5rem; margin-bottom: 0.5rem; font-size: 0.9rem;">Fallback URL (Tailscale IP):</p>
+                        <div class="code">${ipURL} <button class="copy-btn" onclick="copyText('${ipURL}')">Copy</button></div>
+                    </div>
+                `;
+            }
+
+            urlsDiv.innerHTML = html;
+        }
+
+        function copyText(text) {
+            navigator.clipboard.writeText(text).then(() => {
+                // Could add a "Copied!" toast here
+            });
+        }
+
+        // Initialize
+        detectSystem();
+    </script>
+</body>
+</html>
