@@ -1,6 +1,6 @@
 # Makefile for Dollhouse q
 
-VERSION := 0.6.0
+VERSION := 0.6.1
 BINARY := dollhouse-q
 GO := go
 INSTALL_PATH := /usr/local/bin

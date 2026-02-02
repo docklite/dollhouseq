@@ -594,6 +594,13 @@
 
       } catch (err) {
         console.error('Failed to fetch data:', err);
+        // Show error in UI
+        const statusWord = document.querySelector('.statusWord');
+        const dot = document.querySelector('.dot');
+        statusWord.textContent = 'ERROR';
+        statusWord.style.color = 'var(--bad)';
+        dot.style.background = 'var(--bad)';
+        document.querySelector('.count').textContent = 'Connection error';
       }
     }
 

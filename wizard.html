@@ -590,6 +590,9 @@
                 }
             } catch (err) {
                 console.error('Detection failed:', err);
+                updateCheckStatus('app', 'bad', 'Detection failed');
+                updateCheckStatus('tailscale', 'bad', 'Detection failed');
+                updateCheckStatus('docker', 'bad', 'Detection failed');
             }
         }
 
@@ -733,6 +736,16 @@
                 await api('/configure', { method: 'POST', body: JSON.stringify(payload) });
             } catch (e) {
                 console.error('Configure failed:', e);
+                btn.textContent = 'Save failed: ' + (e.message || 'Unknown error');
+                btn.style.borderColor = 'var(--bad)';
+                btn.style.color = 'var(--bad)';
+                setTimeout(() => {
+                    btn.textContent = 'Finish Setup';
+                    btn.disabled = false;
+                    btn.style.borderColor = '';
+                    btn.style.color = '';
+                }, 3000);
+                return; // Don't continue to restart
             }
 
             btn.textContent = 'Restarting...';

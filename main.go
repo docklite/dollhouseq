@@ -21,7 +21,7 @@ import (
 	"golang.org/x/sys/unix"
 )
 
-const version = "0.6.0"
+const version = "0.6.1"
 
 //go:embed dollhouseq.html wizard.html
 var htmlContent embed.FS
@@ -1078,6 +1078,17 @@ func extractDownloadsPath(binds []string) string {
 	return ""
 }
 
+// extractConfigPath parses bind mounts to find the host path mapped to /config
+func extractConfigPath(binds []string) string {
+	for _, bind := range binds {
+		parts := strings.Split(bind, ":")
+		if len(parts) >= 2 && parts[1] == "/config" {
+			return parts[0]
+		}
+	}
+	return ""
+}
+
 // getQBWebUIPort finds the first TCP port mapping (assumed to be the WebUI port)
 func getQBWebUIPort(mappings []dockerPortMapping) string {
 	for _, m := range mappings {
@@ -1236,11 +1247,12 @@ func (s *Server) runVPNSetup(run *vpnSetupRun, req VPNSetupRequest) {
 	}
 	addStep("restart_qb", "running", "Detected published ports: "+formatPortMappings(portMappings))
 
-	// Extract qB WebUI port and downloads path for wizard
+	// Extract qB WebUI port, downloads path, and config path for wizard
 	var inspect dockerInspectResult
 	json.Unmarshal(inspectOut, &inspect)
 	qbPort := getQBWebUIPort(portMappings)
 	diskPath := extractDownloadsPath(inspect.HostConfig.Binds)
+	configPath := extractConfigPath(inspect.HostConfig.Binds)
 
 	addStep("restart_qb", "running", "Stopping qBittorrent...")
 	if out, err := exec.Command("docker", "stop", "qbittorrent").CombinedOutput(); err != nil {
@@ -1331,8 +1343,15 @@ func (s *Server) runVPNSetup(run *vpnSetupRun, req VPNSetupRequest) {
 	// Step 5: Configure HTTPS for qBittorrent (needed for magnet link handlers)
 	addStep("setup_https", "running", "Generating SSL certificate for qBittorrent...")
 
+	// Validate we have a config path
+	if configPath == "" {
+		addStep("setup_https", "error", "Could not detect qBittorrent config path from docker inspect")
+		finish()
+		return
+	}
+
 	// Create SSL directory
-	sslDir := "/opt/seedbox/qbittorrent/config/ssl"
+	sslDir := filepath.Join(configPath, "ssl")
 	if err := os.MkdirAll(sslDir, 0755); err != nil {
 		addStep("setup_https", "error", "Failed to create SSL directory: "+err.Error())
 		finish()
@@ -1353,7 +1372,7 @@ func (s *Server) runVPNSetup(run *vpnSetupRun, req VPNSetupRequest) {
 	addStep("setup_https", "running", "SSL certificate generated. Enabling HTTPS in qBittorrent...")
 
 	// Enable HTTPS in qBittorrent config
-	qbConfigPath := "/opt/seedbox/qbittorrent/config/qBittorrent/qBittorrent.conf"
+	qbConfigPath := filepath.Join(configPath, "qBittorrent/qBittorrent.conf")
 	configData, err := os.ReadFile(qbConfigPath)
 	if err != nil {
 		addStep("setup_https", "error", "Failed to read qBittorrent config: "+err.Error())
@@ -1395,9 +1414,16 @@ func (s *Server) runVPNSetup(run *vpnSetupRun, req VPNSetupRequest) {
 	// Create /downloads/incomplete directory
 	addStep("setup_https", "running", "Creating downloads directories...")
 	incompleteCmd := exec.Command("docker", "exec", "qbittorrent", "mkdir", "-p", "/downloads/incomplete")
-	incompleteCmd.Run()
+	if out, err := incompleteCmd.CombinedOutput(); err != nil {
+		addStep("setup_https", "error", fmt.Sprintf("Failed to create /downloads/incomplete: %v\n%s", err, string(out)))
+		finish()
+		return
+	}
 	chownCmd := exec.Command("docker", "exec", "qbittorrent", "chown", "abc:users", "/downloads/incomplete")
-	chownCmd.Run()
+	if _, err := chownCmd.CombinedOutput(); err != nil {
+		// Non-fatal - log but continue
+		addStep("setup_https", "running", "Warning: chown failed (non-fatal): "+err.Error())
+	}
 
 	// Restart qBittorrent to apply HTTPS
 	addStep("setup_https", "running", "Restarting qBittorrent to enable HTTPS...")
@@ -1407,8 +1433,31 @@ func (s *Server) runVPNSetup(run *vpnSetupRun, req VPNSetupRequest) {
 		return
 	}
 
-	// Wait for qBittorrent to come back up (check HTTPS port)
-	time.Sleep(8 * time.Second)
+	// Wait for qBittorrent to come back up and verify HTTPS
+	addStep("setup_https", "running", "Verifying HTTPS is working...")
+	httpsClient := &http.Client{
+		Timeout: 5 * time.Second,
+		Transport: &http.Transport{
+			TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
+		},
+	}
+	httpsOK := false
+	for i := 0; i < 12; i++ {
+		time.Sleep(2 * time.Second)
+		resp, err := httpsClient.Get("https://127.0.0.1:" + qbPort)
+		if err == nil {
+			resp.Body.Close()
+			if resp.StatusCode == http.StatusOK || resp.StatusCode == http.StatusUnauthorized {
+				httpsOK = true
+				break
+			}
+		}
+	}
+	if !httpsOK {
+		addStep("setup_https", "error", "qBittorrent did not respond on HTTPS within 24s. Check logs: docker logs qbittorrent")
+		finish()
+		return
+	}
 	addStep("setup_https", "ok", "HTTPS enabled. qBittorrent WebUI is now accessible via https://")
 
 	// Step 6: Save config
