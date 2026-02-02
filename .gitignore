@@ -16,3 +16,10 @@ config.json
 *.swp
 *.swo
 *~
+
+# Test/temp files
+test-config/
+motd.txt
+*SPEC.md
+*.md.bak
+/tmp/
