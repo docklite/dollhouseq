@@ -1,6 +1,7 @@
 package main
 
 import (
+	"crypto/tls"
 	"embed"
 	"encoding/json"
 	"errors"
@@ -12,6 +13,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -19,7 +21,7 @@ import (
 	"golang.org/x/sys/unix"
 )
 
-const version = "0.4.0"
+const version = "0.6.0"
 
 //go:embed dollhouseq.html wizard.html
 var htmlContent embed.FS
@@ -58,6 +60,63 @@ type TailscaleConfig struct {
 // DockerConfig contains Docker integration state
 type DockerConfig struct {
 	Enabled bool `json:"enabled"`
+}
+
+// VPNSetupRequest is the payload from the wizard's VPN setup form.
+// The private key is used only for the docker run command and never persisted.
+type VPNSetupRequest struct {
+	PrivateKey    string `json:"private_key"`
+	WireGuardAddr string `json:"wireguard_address"`
+}
+
+// vpnSetupStatus represents a single step's outcome during VPN orchestration.
+type vpnSetupStatus struct {
+	Step     string `json:"step"`
+	Status   string `json:"status"` // "pending", "running", "ok", "error"
+	Message  string `json:"message"`
+	QBPort   string `json:"qb_port,omitempty"`   // populated on "done" step: detected qB WebUI port
+	DiskPath string `json:"disk_path,omitempty"` // populated on "done" step: detected downloads path
+}
+
+// vpnSetupRun holds the live state of a VPN setup invocation.
+type vpnSetupRun struct {
+	mu     sync.Mutex
+	steps  []vpnSetupStatus
+	done   bool
+	notify chan struct{} // signals new step to SSE loop
+}
+
+// dockerInspectResult is a minimal subset of docker inspect JSON,
+// containing only the fields needed to reconstruct a docker run command.
+type dockerInspectResult struct {
+	Name   string `json:"Name"`
+	Config struct {
+		Image string   `json:"Image"`
+		Env   []string `json:"Env"`
+		Cmd   []string `json:"Cmd"`
+	} `json:"Config"`
+	HostConfig struct {
+		RestartPolicy struct {
+			Name string `json:"Name"`
+		} `json:"RestartPolicy"`
+		Binds        []string                       `json:"Binds"`
+		PortBindings map[string][]dockerPortBinding `json:"PortBindings"`
+	} `json:"HostConfig"`
+	NetworkSettings struct {
+		Ports map[string][]dockerPortBinding `json:"Ports"`
+	} `json:"NetworkSettings"`
+}
+
+type dockerPortBinding struct {
+	HostIP   string `json:"HostIp"`
+	HostPort string `json:"HostPort"`
+}
+
+type dockerPortMapping struct {
+	HostIP        string
+	HostPort      string
+	ContainerPort string
+	Proto         string
 }
 
 // SetDefaults applies default values to config fields
@@ -212,13 +271,21 @@ type QBClient struct {
 
 func NewQBClient(baseURL, username, password string) *QBClient {
 	jar, _ := cookiejar.New(nil)
+
+	// Skip TLS verification for localhost HTTPS (self-signed certs)
+	transport := &http.Transport{}
+	if strings.HasPrefix(baseURL, "https://127.0.0.1") || strings.HasPrefix(baseURL, "https://localhost") {
+		transport.TLSClientConfig = &tls.Config{InsecureSkipVerify: true}
+	}
+
 	return &QBClient{
 		baseURL:  strings.TrimRight(baseURL, "/"),
 		username: username,
 		password: password,
 		client: &http.Client{
-			Timeout: 10 * time.Second,
-			Jar:     jar,
+			Timeout:   10 * time.Second,
+			Jar:       jar,
+			Transport: transport,
 		},
 	}
 }
@@ -374,7 +441,7 @@ func mapQBStateToSimple(qbState string) string {
 		return "downloading"
 	case "uploading", "stalledUP", "queuedUP", "forcedUP", "checkingUP":
 		return "seeding"
-	case "pausedDL", "pausedUP":
+	case "pausedDL", "pausedUP", "stoppedDL", "stoppedUP":
 		return "paused"
 	case "error", "missingFiles", "unknown":
 		return "error"
@@ -469,6 +536,8 @@ type Server struct {
 	startTime   time.Time
 	lastCheck   time.Time
 	lastCheckMu sync.RWMutex
+	vpnRun      *vpnSetupRun
+	vpnRunMu    sync.Mutex
 }
 
 func NewServer(cfg *Config) *Server {
@@ -785,6 +854,12 @@ func (s *Server) handleWizardConfigure(w http.ResponseWriter, r *http.Request) {
 	if updates.WebUIUrl != "" {
 		s.config.WebUIUrl = updates.WebUIUrl
 	}
+	if updates.GluetunHealthURL != "" {
+		s.config.GluetunHealthURL = updates.GluetunHealthURL
+	}
+	if updates.DiskPath != "" {
+		s.config.DiskPath = updates.DiskPath
+	}
 	if updates.Server.BindMode != "" {
 		s.config.Server.BindMode = updates.Server.BindMode
 	}
@@ -831,6 +906,538 @@ func (s *Server) handleWizardConfigure(w http.ResponseWriter, r *http.Request) {
 	}()
 }
 
+// handleQBTest validates qBittorrent credentials
+func (s *Server) handleQBTest(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	var req struct {
+		URL      string `json:"qb_url"`
+		Username string `json:"qb_username"`
+		Password string `json:"qb_password"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "Invalid request", http.StatusBadRequest)
+		return
+	}
+
+	if req.URL == "" || req.Username == "" || req.Password == "" {
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"ok":    false,
+			"error": "URL, username, and password are required",
+		})
+		return
+	}
+
+	testClient := NewQBClient(req.URL, req.Username, req.Password)
+	if err := testClient.Login(); err != nil {
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"ok":    false,
+			"error": fmt.Sprintf("Login failed: %v", err),
+		})
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]interface{}{"ok": true})
+}
+
+// reconstructQBRunArgs parses docker inspect JSON and rebuilds docker run args
+// with --network container:gluetun added. Port mappings are intentionally dropped
+// since they move to the Gluetun container.
+func reconstructQBRunArgs(inspectJSON []byte) ([]string, error) {
+	var inspect dockerInspectResult
+	if err := json.Unmarshal(inspectJSON, &inspect); err != nil {
+		return nil, fmt.Errorf("parse inspect JSON: %w", err)
+	}
+
+	var args []string
+
+	name := strings.TrimPrefix(inspect.Name, "/")
+	args = append(args, "-d", "--name", name)
+
+	if p := inspect.HostConfig.RestartPolicy.Name; p != "" && p != "no" {
+		args = append(args, "--restart", p)
+	}
+
+	args = append(args, "--network", "container:gluetun")
+
+	for _, bind := range inspect.HostConfig.Binds {
+		args = append(args, "-v", bind)
+	}
+
+	for _, env := range inspect.Config.Env {
+		if strings.HasPrefix(env, "PATH=") || strings.HasPrefix(env, "HOME=") {
+			continue
+		}
+		args = append(args, "-e", env)
+	}
+
+	args = append(args, inspect.Config.Image)
+	args = append(args, inspect.Config.Cmd...)
+
+	return args, nil
+}
+
+func extractPortMappings(inspectJSON []byte) ([]dockerPortMapping, error) {
+	var inspect dockerInspectResult
+	if err := json.Unmarshal(inspectJSON, &inspect); err != nil {
+		return nil, fmt.Errorf("parse inspect JSON: %w", err)
+	}
+
+	ports := inspect.NetworkSettings.Ports
+	if len(ports) == 0 {
+		ports = inspect.HostConfig.PortBindings
+	}
+
+	var mappings []dockerPortMapping
+	for portProto, bindings := range ports {
+		if len(bindings) == 0 {
+			continue
+		}
+
+		parts := strings.SplitN(portProto, "/", 2)
+		containerPort := parts[0]
+		proto := "tcp"
+		if len(parts) == 2 && parts[1] != "" {
+			proto = parts[1]
+		}
+
+		for _, binding := range bindings {
+			if binding.HostPort == "" {
+				continue
+			}
+			mappings = append(mappings, dockerPortMapping{
+				HostIP:        binding.HostIP,
+				HostPort:      binding.HostPort,
+				ContainerPort: containerPort,
+				Proto:         proto,
+			})
+		}
+	}
+
+	sort.Slice(mappings, func(i, j int) bool {
+		if mappings[i].ContainerPort != mappings[j].ContainerPort {
+			return mappings[i].ContainerPort < mappings[j].ContainerPort
+		}
+		if mappings[i].Proto != mappings[j].Proto {
+			return mappings[i].Proto < mappings[j].Proto
+		}
+		return mappings[i].HostPort < mappings[j].HostPort
+	})
+
+	return mappings, nil
+}
+
+func formatPortMappings(mappings []dockerPortMapping) string {
+	if len(mappings) == 0 {
+		return "none"
+	}
+
+	parts := make([]string, 0, len(mappings))
+	for _, m := range mappings {
+		label := m.HostPort + "->" + m.ContainerPort
+		if m.Proto != "" {
+			label += "/" + m.Proto
+		}
+		if m.HostIP != "" && m.HostIP != "0.0.0.0" && m.HostIP != "::" {
+			label = m.HostIP + ":" + label
+		}
+		parts = append(parts, label)
+	}
+	return strings.Join(parts, ", ")
+}
+
+func buildPortFlags(mappings []dockerPortMapping) []string {
+	var flags []string
+	for _, m := range mappings {
+		port := m.HostPort + ":" + m.ContainerPort
+		if m.HostIP != "" && m.HostIP != "0.0.0.0" && m.HostIP != "::" {
+			port = m.HostIP + ":" + port
+		}
+		if m.Proto != "" && m.Proto != "tcp" {
+			port += "/" + m.Proto
+		}
+		flags = append(flags, "-p", port)
+	}
+	return flags
+}
+
+// extractDownloadsPath parses bind mounts to find the host path mapped to /downloads
+func extractDownloadsPath(binds []string) string {
+	for _, bind := range binds {
+		parts := strings.Split(bind, ":")
+		if len(parts) >= 2 && parts[1] == "/downloads" {
+			return parts[0]
+		}
+	}
+	return ""
+}
+
+// getQBWebUIPort finds the first TCP port mapping (assumed to be the WebUI port)
+func getQBWebUIPort(mappings []dockerPortMapping) string {
+	for _, m := range mappings {
+		if m.Proto == "tcp" && m.HostPort != "" {
+			return m.HostPort
+		}
+	}
+	return ""
+}
+
+func deriveVPNInputPorts(mappings []dockerPortMapping) string {
+	ports := make(map[string]struct{})
+	for _, m := range mappings {
+		if m.Proto == "udp" {
+			ports[m.ContainerPort] = struct{}{}
+		}
+	}
+	if len(ports) == 0 {
+		return ""
+	}
+
+	list := make([]string, 0, len(ports))
+	for p := range ports {
+		list = append(list, p)
+	}
+	sort.Strings(list)
+	return strings.Join(list, ",")
+}
+
+// handleVPNSetup starts VPN orchestration in a background goroutine.
+func (s *Server) handleVPNSetup(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	var req VPNSetupRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "Invalid request body", http.StatusBadRequest)
+		return
+	}
+	if req.PrivateKey == "" || req.WireGuardAddr == "" {
+		http.Error(w, "private_key and wireguard_address are required", http.StatusBadRequest)
+		return
+	}
+
+	run := &vpnSetupRun{
+		notify: make(chan struct{}, 16),
+	}
+
+	s.vpnRunMu.Lock()
+	s.vpnRun = run
+	s.vpnRunMu.Unlock()
+
+	go s.runVPNSetup(run, req)
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]bool{"started": true})
+}
+
+// handleVPNStatus streams VPN setup progress via Server-Sent Events.
+func (s *Server) handleVPNStatus(w http.ResponseWriter, r *http.Request) {
+	flusher, ok := w.(http.Flusher)
+	if !ok {
+		http.Error(w, "Streaming not supported", http.StatusInternalServerError)
+		return
+	}
+
+	s.vpnRunMu.Lock()
+	run := s.vpnRun
+	s.vpnRunMu.Unlock()
+
+	if run == nil {
+		http.Error(w, "No VPN setup in progress", http.StatusNotFound)
+		return
+	}
+
+	w.Header().Set("Content-Type", "text/event-stream")
+	w.Header().Set("Cache-Control", "no-cache")
+	w.Header().Set("Connection", "keep-alive")
+
+	sentCount := 0
+	for {
+		run.mu.Lock()
+		steps := run.steps
+		done := run.done
+		run.mu.Unlock()
+
+		for sentCount < len(steps) {
+			data, _ := json.Marshal(steps[sentCount])
+			fmt.Fprintf(w, "data: %s\n\n", data)
+			sentCount++
+		}
+		flusher.Flush()
+
+		if done {
+			return
+		}
+
+		select {
+		case <-run.notify:
+		case <-r.Context().Done():
+			return
+		}
+	}
+}
+
+// runVPNSetup orchestrates Gluetun startup and qBittorrent rewiring.
+func (s *Server) runVPNSetup(run *vpnSetupRun, req VPNSetupRequest) {
+	addStep := func(step, status, msg string) {
+		run.mu.Lock()
+		run.steps = append(run.steps, vpnSetupStatus{Step: step, Status: status, Message: msg})
+		run.mu.Unlock()
+		select {
+		case run.notify <- struct{}{}:
+		default:
+		}
+	}
+
+	finish := func() {
+		run.mu.Lock()
+		run.done = true
+		run.mu.Unlock()
+		select {
+		case run.notify <- struct{}{}:
+		default:
+		}
+	}
+
+	// Step 1: Inspect qBittorrent while it's still running, then stop it to free its published ports
+	addStep("restart_qb", "running", "Inspecting qBittorrent container...")
+	inspectOut, err := exec.Command("docker", "inspect", "--format={{json .}}", "qbittorrent").CombinedOutput()
+	if err != nil {
+		addStep("restart_qb", "error", fmt.Sprintf("docker inspect failed: %v\n%s", err, string(inspectOut)))
+		finish()
+		return
+	}
+
+	runArgs, err := reconstructQBRunArgs(inspectOut)
+	if err != nil {
+		addStep("restart_qb", "error", "Failed to parse qBittorrent config: "+err.Error())
+		finish()
+		return
+	}
+
+	portMappings, err := extractPortMappings(inspectOut)
+	if err != nil {
+		addStep("restart_qb", "error", "Failed to read qBittorrent port mappings: "+err.Error())
+		finish()
+		return
+	}
+	if len(portMappings) == 0 {
+		addStep("restart_qb", "error", "No published ports detected for qBittorrent. Ensure the Web UI port is published (e.g., -p 8080:8080).")
+		finish()
+		return
+	}
+	addStep("restart_qb", "running", "Detected published ports: "+formatPortMappings(portMappings))
+
+	// Extract qB WebUI port and downloads path for wizard
+	var inspect dockerInspectResult
+	json.Unmarshal(inspectOut, &inspect)
+	qbPort := getQBWebUIPort(portMappings)
+	diskPath := extractDownloadsPath(inspect.HostConfig.Binds)
+
+	addStep("restart_qb", "running", "Stopping qBittorrent...")
+	if out, err := exec.Command("docker", "stop", "qbittorrent").CombinedOutput(); err != nil {
+		addStep("restart_qb", "error", fmt.Sprintf("docker stop failed: %v\n%s", err, string(out)))
+		finish()
+		return
+	}
+
+	addStep("restart_qb", "running", "Removing old qBittorrent container...")
+	if out, err := exec.Command("docker", "rm", "qbittorrent").CombinedOutput(); err != nil {
+		addStep("restart_qb", "error", fmt.Sprintf("docker rm failed: %v\n%s", err, string(out)))
+		finish()
+		return
+	}
+
+	// Step 2: Start Gluetun (now that published ports are free). Clean up any pre-existing container first.
+	addStep("start_gluetun", "running", "Checking for existing Gluetun container...")
+	if out, err := exec.Command("docker", "inspect", "--format={{.ID}}", "gluetun").CombinedOutput(); err == nil && len(out) > 0 {
+		addStep("start_gluetun", "running", "Removing existing Gluetun container...")
+		exec.Command("docker", "stop", "gluetun").Run()
+		exec.Command("docker", "rm", "gluetun").Run()
+	}
+
+	addStep("start_gluetun", "running", "Pulling and starting Gluetun container...")
+	vpnInputPorts := deriveVPNInputPorts(portMappings)
+	if vpnInputPorts == "" {
+		vpnInputPorts = "6881"
+	}
+
+	gluetunArgs := []string{
+		"run", "-d",
+		"--name", "gluetun",
+		"--cap-add", "NET_ADMIN",
+		"--device", "/dev/net/tun:/dev/net/tun",
+		"-e", "VPN_SERVICE_PROVIDER=mullvad",
+		"-e", "VPN_TYPE=wireguard",
+		"-e", "WIREGUARD_PRIVATE_KEY=" + req.PrivateKey,
+		"-e", "WIREGUARD_ADDRESSES=" + req.WireGuardAddr,
+		"-e", "HEALTH_SERVER_ADDRESS=0.0.0.0:9999",
+		"-e", "FIREWALL_VPN_INPUT_PORTS=" + vpnInputPorts,
+		"-p", "9999:9999",
+	}
+	gluetunArgs = append(gluetunArgs, buildPortFlags(portMappings)...)
+	gluetunArgs = append(gluetunArgs, "qmcgaw/gluetun")
+
+	out, err := exec.Command("docker", gluetunArgs...).CombinedOutput()
+	if err != nil {
+		addStep("start_gluetun", "error", fmt.Sprintf("Failed to start Gluetun: %v\n%s", err, string(out)))
+		finish()
+		return
+	}
+	addStep("start_gluetun", "ok", "Gluetun started: "+strings.TrimSpace(string(out)))
+
+	// Step 3: Restart qBittorrent networked through Gluetun
+	addStep("restart_qb", "running", "Restarting qBittorrent networked through Gluetun...")
+	cmd := exec.Command("docker", append([]string{"run"}, runArgs...)...)
+	if out, err := cmd.CombinedOutput(); err != nil {
+		addStep("restart_qb", "error", fmt.Sprintf("docker run failed: %v\n%s", err, string(out)))
+		finish()
+		return
+	} else {
+		addStep("restart_qb", "ok", "qBittorrent restarted: "+strings.TrimSpace(string(out)))
+	}
+
+	// Step 4: Wait for Gluetun health check
+	addStep("health_check", "running", "Waiting for Gluetun VPN to connect (up to 120s)...")
+	healthClient := &http.Client{Timeout: 5 * time.Second}
+	healthy := false
+	for i := 0; i < 24; i++ {
+		time.Sleep(5 * time.Second)
+		resp, err := healthClient.Get("http://127.0.0.1:9999")
+		if err == nil {
+			resp.Body.Close()
+			if resp.StatusCode == http.StatusOK {
+				healthy = true
+				break
+			}
+		}
+		addStep("health_check", "running", fmt.Sprintf("Waiting... (%ds)", (i+1)*5))
+	}
+	if !healthy {
+		addStep("health_check", "error", "VPN did not connect within 120s. Check Gluetun logs: docker logs gluetun")
+		finish()
+		return
+	}
+	addStep("health_check", "ok", "VPN is connected and healthy.")
+
+	// Step 5: Configure HTTPS for qBittorrent (needed for magnet link handlers)
+	addStep("setup_https", "running", "Generating SSL certificate for qBittorrent...")
+
+	// Create SSL directory
+	sslDir := "/opt/seedbox/qbittorrent/config/ssl"
+	if err := os.MkdirAll(sslDir, 0755); err != nil {
+		addStep("setup_https", "error", "Failed to create SSL directory: "+err.Error())
+		finish()
+		return
+	}
+
+	// Generate self-signed certificate
+	certPath := filepath.Join(sslDir, "qb.crt")
+	keyPath := filepath.Join(sslDir, "qb.key")
+	opensslCmd := exec.Command("openssl", "req", "-new", "-x509", "-days", "3650", "-nodes",
+		"-out", certPath, "-keyout", keyPath, "-subj", "/CN=qbittorrent")
+	if out, err := opensslCmd.CombinedOutput(); err != nil {
+		addStep("setup_https", "error", fmt.Sprintf("Failed to generate SSL cert: %v\n%s", err, string(out)))
+		finish()
+		return
+	}
+	os.Chmod(keyPath, 0600)
+	addStep("setup_https", "running", "SSL certificate generated. Enabling HTTPS in qBittorrent...")
+
+	// Enable HTTPS in qBittorrent config
+	qbConfigPath := "/opt/seedbox/qbittorrent/config/qBittorrent/qBittorrent.conf"
+	configData, err := os.ReadFile(qbConfigPath)
+	if err != nil {
+		addStep("setup_https", "error", "Failed to read qBittorrent config: "+err.Error())
+		finish()
+		return
+	}
+
+	configStr := string(configData)
+	// Add HTTPS settings under [Preferences] section if not already present
+	if !strings.Contains(configStr, "WebUI\\HTTPS\\Enabled") {
+		// Find [Preferences] section and add HTTPS config
+		prefsIdx := strings.Index(configStr, "[Preferences]")
+		if prefsIdx == -1 {
+			configStr += "\n[Preferences]\n"
+			prefsIdx = len(configStr) - len("[Preferences]\n")
+		}
+		// Find end of [Preferences] section (next section or EOF)
+		nextSection := strings.Index(configStr[prefsIdx+len("[Preferences]"):], "\n[")
+		insertIdx := prefsIdx + len("[Preferences]\n")
+		if nextSection != -1 {
+			insertIdx = prefsIdx + len("[Preferences]") + nextSection
+		} else {
+			insertIdx = len(configStr)
+		}
+
+		httpsConfig := "WebUI\\HTTPS\\CertificatePath=/config/ssl/qb.crt\n" +
+			"WebUI\\HTTPS\\Enabled=true\n" +
+			"WebUI\\HTTPS\\KeyPath=/config/ssl/qb.key\n"
+
+		configStr = configStr[:insertIdx] + httpsConfig + configStr[insertIdx:]
+
+		if err := os.WriteFile(qbConfigPath, []byte(configStr), 0644); err != nil {
+			addStep("setup_https", "error", "Failed to update qBittorrent config: "+err.Error())
+			finish()
+			return
+		}
+	}
+
+	// Create /downloads/incomplete directory
+	addStep("setup_https", "running", "Creating downloads directories...")
+	incompleteCmd := exec.Command("docker", "exec", "qbittorrent", "mkdir", "-p", "/downloads/incomplete")
+	incompleteCmd.Run()
+	chownCmd := exec.Command("docker", "exec", "qbittorrent", "chown", "abc:users", "/downloads/incomplete")
+	chownCmd.Run()
+
+	// Restart qBittorrent to apply HTTPS
+	addStep("setup_https", "running", "Restarting qBittorrent to enable HTTPS...")
+	if out, err := exec.Command("docker", "restart", "qbittorrent").CombinedOutput(); err != nil {
+		addStep("setup_https", "error", fmt.Sprintf("Failed to restart qBittorrent: %v\n%s", err, string(out)))
+		finish()
+		return
+	}
+
+	// Wait for qBittorrent to come back up (check HTTPS port)
+	time.Sleep(8 * time.Second)
+	addStep("setup_https", "ok", "HTTPS enabled. qBittorrent WebUI is now accessible via https://")
+
+	// Step 6: Save config
+	addStep("save_config", "running", "Saving config...")
+	s.config.GluetunHealthURL = "http://127.0.0.1:9999"
+	if err := saveConfig(s.config, getConfigPath()); err != nil {
+		addStep("save_config", "error", "Failed to save config: "+err.Error())
+		finish()
+		return
+	}
+	addStep("save_config", "ok", "Config saved.")
+
+	// Final "done" step with detected info for wizard
+	run.mu.Lock()
+	run.steps = append(run.steps, vpnSetupStatus{
+		Step:     "done",
+		Status:   "ok",
+		Message:  "VPN setup complete. All qBittorrent traffic is now routed through Mullvad. HTTPS enabled for magnet link support.",
+		QBPort:   "https://" + qbPort, // Include https:// prefix so wizard knows to use HTTPS
+		DiskPath: diskPath,
+	})
+	run.mu.Unlock()
+	select {
+	case run.notify <- struct{}{}:
+	default:
+	}
+	finish()
+}
+
 // setupRoutes configures HTTP routes
 func (s *Server) setupRoutes() *http.ServeMux {
 	mux := http.NewServeMux()
@@ -852,6 +1459,9 @@ func (s *Server) setupRoutes() *http.ServeMux {
 	mux.HandleFunc("/actions/resume_all", s.handleResumeAll)
 	mux.HandleFunc("/api/wizard/detect", s.handleWizardDetect)
 	mux.HandleFunc("/api/wizard/configure", s.handleWizardConfigure)
+	mux.HandleFunc("/api/wizard/qb-test", s.handleQBTest)
+	mux.HandleFunc("/api/wizard/vpn/setup", s.handleVPNSetup)
+	mux.HandleFunc("/api/wizard/vpn/status", s.handleVPNStatus)
 
 	return mux
 }
@@ -921,7 +1531,7 @@ func main() {
 		Addr:         cfg.ListenAddr,
 		Handler:      mux,
 		ReadTimeout:  10 * time.Second,
-		WriteTimeout: 10 * time.Second,
+		WriteTimeout: 0,
 		IdleTimeout:  60 * time.Second,
 	}
 

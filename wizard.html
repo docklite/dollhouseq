@@ -401,6 +401,10 @@
             </div>
             <div class="phase-step" data-phase="5">
                 <div class="phase-num">5</div>
+                <div class="phase-label">VPN</div>
+            </div>
+            <div class="phase-step" data-phase="6">
+                <div class="phase-num">6</div>
                 <div class="phase-label">Finish</div>
             </div>
         </div>
@@ -470,8 +474,13 @@
             <!-- Content populated dynamically -->
         </div>
 
-        <!-- Phase 5: Finish -->
+        <!-- Phase 5: VPN / Gluetun Setup -->
         <div id="phase-5" class="phase-content hidden">
+            <!-- Content populated dynamically by buildVPNPhase() -->
+        </div>
+
+        <!-- Phase 6: Finish -->
+        <div id="phase-6" class="phase-content hidden">
             <div class="card">
                 <h2>qBittorrent Credentials</h2>
                 <p style="margin-bottom: 1rem; color: var(--text-dim);">Enter your qBittorrent Web UI login details.</p>
@@ -479,7 +488,7 @@
                 <div style="display: flex; flex-direction: column; gap: 0.75rem; margin-bottom: 1.5rem;">
                     <div>
                         <label style="display: block; font-size: 0.85rem; color: var(--text-dim); margin-bottom: 0.25rem;">URL</label>
-                        <input type="text" id="qb-url" value="http://127.0.0.1:8081" style="width: 100%; padding: 0.6rem 0.75rem; background: var(--bg-card); border: 1px solid var(--border); border-radius: 6px; color: var(--text); font-size: 0.95rem; box-sizing: border-box;">
+                        <input type="text" id="qb-url" value="http://127.0.0.1:8080" style="width: 100%; padding: 0.6rem 0.75rem; background: var(--bg-card); border: 1px solid var(--border); border-radius: 6px; color: var(--text); font-size: 0.95rem; box-sizing: border-box;">
                     </div>
                     <div>
                         <label style="display: block; font-size: 0.85rem; color: var(--text-dim); margin-bottom: 0.25rem;">Username</label>
@@ -488,6 +497,10 @@
                     <div>
                         <label style="display: block; font-size: 0.85rem; color: var(--text-dim); margin-bottom: 0.25rem;">Password</label>
                         <input type="password" id="qb-password" style="width: 100%; padding: 0.6rem 0.75rem; background: var(--bg-card); border: 1px solid var(--border); border-radius: 6px; color: var(--text); font-size: 0.95rem; box-sizing: border-box;">
+                    </div>
+                    <div>
+                        <label style="display: block; font-size: 0.85rem; color: var(--text-dim); margin-bottom: 0.25rem;">Downloads Path (for disk usage monitoring)</label>
+                        <input type="text" id="disk-path" value="/data" style="width: 100%; padding: 0.6rem 0.75rem; background: var(--bg-card); border: 1px solid var(--border); border-radius: 6px; color: var(--text); font-size: 0.95rem; box-sizing: border-box;">
                     </div>
                 </div>
 
@@ -510,7 +523,10 @@
             tailscaleConnected: false,
             tailscaleInfo: {},
             accessMode: 'localhost',
-            dockerEnabled: false
+            dockerEnabled: false,
+            vpnSetupDone: false,
+            detectedQBPort: '',
+            detectedDiskPath: ''
         };
 
         // Phase navigation
@@ -567,6 +583,10 @@
                 state.tailscaleConnected = result.tailscale.connected;
                 if (result.tailscale.connected) {
                     state.tailscaleInfo = result.tailscale;
+                }
+                const tailnetRadio = document.getElementById('radio-tailnet');
+                if (tailnetRadio) {
+                    tailnetRadio.disabled = !state.tailscaleConnected;
                 }
             } catch (err) {
                 console.error('Detection failed:', err);
@@ -630,6 +650,7 @@
             const qbUrl = document.getElementById('qb-url').value.trim();
             const qbUsername = document.getElementById('qb-username').value.trim();
             const qbPassword = document.getElementById('qb-password').value.trim();
+            const diskPath = document.getElementById('disk-path').value.trim();
 
             if (!qbUrl || !qbUsername || !qbPassword) {
                 btn.style.borderColor = 'var(--bad)';
@@ -639,14 +660,58 @@
             }
 
             btn.disabled = true;
+            btn.textContent = 'Validating credentials...';
+
+            // Test qBittorrent credentials before saving
+            try {
+                const testResp = await fetch('/api/wizard/qb-test', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ qb_url: qbUrl, qb_username: qbUsername, qb_password: qbPassword })
+                });
+                const testResult = await testResp.json();
+                if (!testResult.ok) {
+                    btn.textContent = 'Validation failed: ' + (testResult.error || 'Unknown error');
+                    btn.style.borderColor = 'var(--bad)';
+                    btn.style.color = 'var(--bad)';
+                    setTimeout(() => {
+                        btn.textContent = 'Finish Setup';
+                        btn.style.borderColor = '';
+                        btn.style.color = '';
+                        btn.disabled = false;
+                    }, 3000);
+                    return;
+                }
+            } catch (e) {
+                btn.textContent = 'Network error during validation';
+                btn.style.borderColor = 'var(--bad)';
+                setTimeout(() => {
+                    btn.textContent = 'Finish Setup';
+                    btn.style.borderColor = '';
+                    btn.disabled = false;
+                }, 3000);
+                return;
+            }
+
             btn.textContent = 'Saving...';
 
             try {
+                // Extract protocol and port from qbUrl (e.g., "https://127.0.0.1:8081" -> "https", "8081")
+                const qbProtocol = qbUrl.match(/^(https?):\/\//)?.[1] || 'http';
+                const qbPort = qbUrl.match(/:(\d+)/)?.[1] || '8080';
+
+                // webui_url needs to use Tailscale address in tailnet mode so "Open WebUI" button works
+                let webuiUrl = qbUrl; // default for localhost mode
+                if (state.accessMode === 'tailnet' && state.tailscaleInfo.tailnet_ip) {
+                    webuiUrl = `${qbProtocol}://${state.tailscaleInfo.tailnet_ip}:${qbPort}`;
+                }
+
                 const payload = {
                     qb_url: qbUrl,
                     qb_username: qbUsername,
                     qb_password: qbPassword,
-                    webui_url: qbUrl,
+                    webui_url: webuiUrl,
+                    disk_path: diskPath,
                     server: {
                         bind_mode: state.accessMode,
                         bind_addr: state.accessMode === 'localhost' ? '127.0.0.1:17666' : `${state.tailscaleInfo.tailnet_ip}:17666`
@@ -658,6 +723,12 @@
                         node_name: state.tailscaleInfo.node_name,
                         tailnet_ip: state.tailscaleInfo.tailnet_ip
                     };
+                }
+                if (state.dockerEnabled) {
+                    payload.docker = { enabled: true };
+                }
+                if (state.vpnSetupDone) {
+                    payload.gluetun_health_url = 'http://127.0.0.1:9999';
                 }
                 await api('/configure', { method: 'POST', body: JSON.stringify(payload) });
             } catch (e) {
@@ -800,7 +871,7 @@
 
             // Event listeners
             document.getElementById('btn-skip-docker').addEventListener('click', () => {
-                buildFinishPhase();
+                buildVPNPhase();
                 setPhase(5);
             });
 
@@ -808,7 +879,7 @@
             if (enableBtn) {
                 enableBtn.addEventListener('click', () => {
                     state.dockerEnabled = true;
-                    buildFinishPhase();
+                    buildVPNPhase();
                     setPhase(5);
                 });
             }
@@ -816,13 +887,178 @@
             const installBtn = document.getElementById('btn-install-docker');
             if (installBtn) {
                 installBtn.addEventListener('click', () => {
-                    buildFinishPhase();
+                    buildVPNPhase();
                     setPhase(5);
                 });
             }
         }
 
+        function buildVPNPhase() {
+            const phase5 = document.getElementById('phase-5');
+
+            phase5.innerHTML = `
+                <div class="card">
+                    <h2>VPN Setup</h2>
+                    <p style="margin-bottom: 1rem; color: var(--text-dim);">
+                        Set up a Mullvad WireGuard VPN to route all qBittorrent traffic through an encrypted tunnel.
+                    </p>
+
+                    <div class="info-box" style="margin-bottom: 1rem;">
+                        <div class="info-box-title">Before you continue</div>
+                        <p style="font-size: 0.9rem; margin-bottom: 0.5rem;">
+                            Go to <a href="https://mullvad.net/en/account" target="_blank" style="color: var(--cyan);">mullvad.net</a> →
+                            WireGuard keys → download a .conf file. It looks like this:
+                        </p>
+                        <div class="code" style="display: block; white-space: pre-wrap; font-size: 0.85rem;">[Interface]
+PrivateKey = <span style="color: var(--pink);">← paste this</span>
+Address = <span style="color: var(--pink);">← paste this (just the IPv4, e.g. 10.64.222.21/32)</span></div>
+                    </div>
+
+                    <div id="vpn-input-form">
+                        <div style="display: flex; flex-direction: column; gap: 0.75rem; margin-bottom: 1rem;">
+                            <div>
+                                <label style="display: block; font-size: 0.85rem; color: var(--text-dim); margin-bottom: 0.25rem;">Private Key</label>
+                                <input type="password" id="vpn-private-key" placeholder="Your WireGuard private key" style="width: 100%; padding: 0.6rem 0.75rem; background: var(--bg-card); border: 1px solid var(--border); border-radius: 6px; color: var(--text); font-size: 0.95rem; box-sizing: border-box;">
+                            </div>
+                            <div>
+                                <label style="display: block; font-size: 0.85rem; color: var(--text-dim); margin-bottom: 0.25rem;">WireGuard Address</label>
+                                <input type="text" id="vpn-wg-address" placeholder="e.g. 10.64.222.21/32" style="width: 100%; padding: 0.6rem 0.75rem; background: var(--bg-card); border: 1px solid var(--border); border-radius: 6px; color: var(--text); font-size: 0.95rem; box-sizing: border-box;">
+                            </div>
+                        </div>
+                        <div class="btn-group">
+                            <button class="btn btn-outline" id="btn-skip-vpn">Skip for now</button>
+                            <button class="btn btn-primary" id="btn-setup-vpn">Set Up VPN</button>
+                        </div>
+                    </div>
+
+                    <div id="vpn-progress" style="display: none;">
+                        <div class="command-output" id="vpn-output" style="min-height: 120px; margin-bottom: 1rem;"></div>
+                        <div id="vpn-done-buttons" style="display: none;">
+                            <div class="btn-group">
+                                <button class="btn btn-outline" id="btn-vpn-retry" style="display: none;">Retry</button>
+                                <button class="btn btn-primary" id="btn-vpn-next" style="display: none;">Continue</button>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            `;
+
+            document.getElementById('btn-skip-vpn').addEventListener('click', () => {
+                state.vpnSetupDone = false;
+                buildFinishPhase();
+                setPhase(6);
+            });
+
+            document.getElementById('btn-setup-vpn').addEventListener('click', async () => {
+                const key = document.getElementById('vpn-private-key').value.trim();
+                const addr = document.getElementById('vpn-wg-address').value.trim();
+
+                if (!key || !addr) {
+                    const btn = document.getElementById('btn-setup-vpn');
+                    btn.style.borderColor = 'var(--bad)';
+                    btn.style.color = 'var(--bad)';
+                    setTimeout(() => { btn.style.borderColor = ''; btn.style.color = ''; }, 2000);
+                    return;
+                }
+
+                // Switch to progress view
+                document.getElementById('vpn-input-form').style.display = 'none';
+                document.getElementById('vpn-progress').style.display = 'block';
+                const output = document.getElementById('vpn-output');
+                output.textContent = 'Starting VPN setup...\n';
+
+                // POST to kick off the setup
+                try {
+                    const resp = await fetch('/api/wizard/vpn/setup', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ private_key: key, wireguard_address: addr })
+                    });
+                    if (!resp.ok) {
+                        output.textContent += 'Setup request failed: ' + resp.statusText + '\\n';
+                        showVPNRetry();
+                        return;
+                    }
+                } catch (e) {
+                    output.textContent += 'Network error: ' + e.message + '\\n';
+                    showVPNRetry();
+                    return;
+                }
+
+                // Open SSE stream for live progress
+                const es = new EventSource('/api/wizard/vpn/status');
+                es.onmessage = (event) => {
+                    const msg = JSON.parse(event.data);
+                    const icon = msg.status === 'ok' ? '[+]' : msg.status === 'error' ? '[!]' : '[ ]';
+                    output.textContent += icon + ' ' + msg.step + ': ' + msg.message + '\\n';
+                    output.scrollTop = output.scrollHeight;
+
+                    if (msg.step === 'done' && msg.status === 'ok') {
+                        es.close();
+                        state.vpnSetupDone = true;
+                        // Store detected qB port and disk path
+                        if (msg.qb_port) state.detectedQBPort = msg.qb_port;
+                        if (msg.disk_path) state.detectedDiskPath = msg.disk_path;
+                        showVPNNext();
+                    } else if (msg.status === 'error') {
+                        es.close();
+                        showVPNRetry();
+                    }
+                };
+                es.onerror = () => {
+                    es.close();
+                    output.textContent += '[!] Lost connection to status stream.\\n';
+                    showVPNRetry();
+                };
+            });
+        }
+
+        function showVPNNext() {
+            document.getElementById('vpn-done-buttons').style.display = 'block';
+            const btn = document.getElementById('btn-vpn-next');
+            btn.style.display = 'inline-flex';
+            btn.addEventListener('click', () => {
+                buildFinishPhase();
+                setPhase(6);
+            });
+        }
+
+        function showVPNRetry() {
+            document.getElementById('vpn-done-buttons').style.display = 'block';
+            const btn = document.getElementById('btn-vpn-retry');
+            btn.style.display = 'inline-flex';
+            btn.addEventListener('click', () => {
+                buildVPNPhase();
+            });
+        }
+
         function buildFinishPhase() {
+            // Pre-fill qb-url with detected port if VPN was set up
+            if (state.detectedQBPort) {
+                const qbUrlField = document.getElementById('qb-url');
+                if (qbUrlField) {
+                    // detectedQBPort might be "8081" or "https://8081" (if HTTPS was enabled)
+                    if (state.detectedQBPort.startsWith('http')) {
+                        // Already includes protocol (e.g., "https://8081")
+                        const portMatch = state.detectedQBPort.match(/:\/\/(.+)/);
+                        if (portMatch) {
+                            qbUrlField.value = `${state.detectedQBPort.split('://')[0]}://127.0.0.1:${portMatch[1]}`;
+                        }
+                    } else {
+                        // Just a port number, default to http://
+                        qbUrlField.value = `http://127.0.0.1:${state.detectedQBPort}`;
+                    }
+                }
+            }
+
+            // Pre-fill disk-path with detected path if available
+            if (state.detectedDiskPath) {
+                const diskPathField = document.getElementById('disk-path');
+                if (diskPathField) {
+                    diskPathField.value = state.detectedDiskPath;
+                }
+            }
+
             const urlsDiv = document.getElementById('finish-urls');
             let html = '';
 
@@ -846,6 +1082,15 @@
                         <div class="code">${magicDNS} <button class="copy-btn" onclick="copyText('${magicDNS}')">Copy</button></div>
                         <p style="margin-top: 0.5rem; margin-bottom: 0.5rem; font-size: 0.9rem;">Fallback URL (Tailscale IP):</p>
                         <div class="code">${ipURL} <button class="copy-btn" onclick="copyText('${ipURL}')">Copy</button></div>
+                    </div>
+                `;
+            }
+
+            if (state.vpnSetupDone) {
+                html += `
+                    <div class="info-box" style="margin-top: 1rem;">
+                        <div class="info-box-title" style="color: var(--ok);">VPN Active</div>
+                        <p style="font-size: 0.9rem;">Gluetun (Mullvad WireGuard) is running. All qBittorrent traffic is encrypted through the VPN.</p>
                     </div>
                 `;
             }

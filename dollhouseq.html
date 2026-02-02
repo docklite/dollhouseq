@@ -541,14 +541,15 @@
 
         // Update torrents
         const list = document.querySelector('.list');
-        if (torrents && torrents.length > 0) {
+        const torrentList = torrents.torrents || [];
+        if (torrentList.length > 0) {
           // Count by state
-          const dl = torrents.filter(t => t.state === 'downloading').length;
-          const seed = torrents.filter(t => t.state === 'seeding' || t.state === 'uploading').length;
-          const err = torrents.filter(t => t.state === 'error').length;
+          const dl = torrentList.filter(t => t.state === 'downloading').length;
+          const seed = torrentList.filter(t => t.state === 'seeding' || t.state === 'uploading').length;
+          const err = torrentList.filter(t => t.state === 'error').length;
           document.querySelector('.count').textContent = `Active ${dl} · Seed ${seed} · Err ${err}`;
 
-          list.innerHTML = torrents.slice(0, 20).map(t => {
+          list.innerHTML = torrentList.slice(0, 20).map(t => {
             let dotClass = 'tagDot ';
             let statusText = '';
             if (t.state === 'downloading') {
@@ -582,9 +583,13 @@
           list.innerHTML = '<div style="padding:12px;color:var(--muted);font-family:var(--mono);font-size:12px">No active torrents</div>';
         }
 
-        // Update Open WebUI button
+        // Update Open WebUI button (use <a> with noreferrer to avoid qBittorrent CSRF blocking)
         document.querySelector('.btn:not(.ghost)').onclick = () => {
-          window.open(status.webui_url, '_blank');
+          const a = document.createElement('a');
+          a.href = status.webui_url;
+          a.target = '_blank';
+          a.rel = 'noreferrer noopener';
+          a.click();
         };
 
       } catch (err) {
